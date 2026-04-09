@@ -97,11 +97,18 @@ cron.schedule('* * * * *', async () => {
 
       if (diffSeconds > 60 && !data.reminded) {
         console.log('צריך לשלוח תזכורת ל:', data.user);
-        await client.messages.create({
-  from: 'whatsapp:+14155238886',
-  to: data.user,
-  body: 'תזכורת: יש לך תור שקבעת ⏰'
-});
+       try {
+  const msg = await client.messages.create({
+    from: 'whatsapp:+14155238886',
+    to: data.user,
+    body: 'תזכורת: יש לך תור שקבעת ⏰'
+  });
+
+  console.log('נשלח! SID:', msg.sid);
+
+} catch (err) {
+  console.error('שגיאה בשליחה:', err.message);
+}
 
         await db.collection('appointments').doc(doc.id).update({
           reminded: true
