@@ -92,6 +92,12 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-cron.schedule('* * * * *', () => {
+cron.schedule('* * * * *', async () => {
   console.log('cron עובד - בדיקה כל דקה');
+
+  const snapshot = await db.collection('appointments').get();
+
+  snapshot.forEach(doc => {
+    console.log('תור:', doc.data());
+  });
 });
