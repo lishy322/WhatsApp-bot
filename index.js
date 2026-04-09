@@ -3,10 +3,8 @@ const bodyParser = require('body-parser');
 const admin = require('firebase-admin');
 const cron = require('node-cron');
 
-// קבלת המפתח מה-ENV
+// 🔐 Firebase מה-ENV
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
-
-// תיקון ה-private key (חשוב מאוד)
 serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
 
 admin.initializeApp({
@@ -18,56 +16,40 @@ const db = admin.firestore();
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 
-// זיכרון זמני ל-state
-let userState = {};
-
+// =======================
+// 📲 WEBHOOK (WhatsApp)
+// =======================
 app.post('/webhook', async (req, res) => {
   try {
     console.log('קיבלתי הודעה!');
-    const message = (req.body.Body || '').toLowerCase().trim();
+
+    const message = (req.body.Body || '').trim();
     const user = req.body.From;
 
-    console.log('---');
     console.log('USER:', user);
     console.log('MESSAGE:', message);
 
-    if (!userState[user]) {
-      userState[user] = { step: 'start' };
-    }
-
-    const state = userState[user];
     let reply = '';
 
-    // התחלת שיחה
+    // התחלת תהליך
     if (message.includes('לקבוע')) {
-      state.step = 'choosing_time';
-
-      reply = 'יש לי שעות פנויות:\n16:00\n17:00\n18:00\nאיזה שעה נוחה לך?';
+      reply = 'יש לי שעות פנויות: 16:00, 17:00, 18:00\nאיזה שעה נוחה לך?';
     }
 
-    // בחירת שעה ושמירה ב-Firebase
-    else if (state.step === 'choosing_time') {
-      const cleanTime = message;
-
+    // בחירת שעה
+    else if (message.includes(':')) {
       await db.collection('appointments').add({
-        user,
-        time: cleanTime,
-        createdAt: new Date()
+        user: user,
+        time: message,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        reminded: false
       });
 
-      state.step = 'done';
-
-      reply = `סגור! קבעתי לך תור ב-${cleanTime} ✅`;
-    }
-
-    // ביטול (בסיסי)
-    else if (message.includes('לבטל')) {
-      state.step = 'start';
-      reply = 'בקשת ביטול התקבלה (נשפר בהמשך)';
+      reply = `סגור! קבעתי לך תור ב-${message} ✅`;
     }
 
     else {
-      reply = 'תכתוב "לקבוע תור" או "לבטל תור"';
+      reply = 'לא הבנתי 🤔 כתוב "לקבוע תור"';
     }
 
     res.set('Content-Type', 'text/xml');
@@ -80,33 +62,52 @@ app.post('/webhook', async (req, res) => {
   } catch (err) {
     console.error('ERROR:', err);
 
-    res.status(200).send(`
+    res.set('Content-Type', 'text/xml');
+    res.send(`
       <Response>
-        <Message>יש תקלה, נסה שוב</Message>
+        <Message>שגיאה, נסה שוב</Message>
       </Response>
     `);
   }
 });
 
+// =======================
+// 🔔 CRON - תזכורות
+// =======================
 cron.schedule('* * * * *', async () => {
-  console.log('cron עובד - בדיקה כל דקה');
+  try {
+    console.log('cron עובד - בדיקה כל דקה');
 
-  const now = new Date();
+    const snapshot = await db.collection('appointments').get();
+    const now = new Date();
 
-  const snapshot = await db.collection('appointments').get();
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
 
-  for (const doc of snapshot.docs) {
-  const data = doc.data();
+      if (!data.createdAt) continue;
 
-  const createdAt = data.createdAt.toDate();
-  const now = new Date();
-  const diffSeconds = (now - createdAt) / 1000;
+      const createdAt = data.createdAt.toDate();
+      const diffSeconds = (now - createdAt) / 1000;
 
-  if (diffSeconds > 60 && !data.reminded) {
-    console.log('צריך לשלוח תזכורת ל:', data.user);
+      if (diffSeconds > 60 && !data.reminded) {
+        console.log('צריך לשלוח תזכורת ל:', data.user);
 
-    await db.collection('appointments').doc(doc.id).update({
-      reminded: true
-    });
+        await db.collection('appointments').doc(doc.id).update({
+          reminded: true
+        });
+      }
+    }
+
+  } catch (err) {
+    console.error('CRON ERROR:', err);
   }
-}
+});
+
+// =======================
+// 🚀 SERVER
+// =======================
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
