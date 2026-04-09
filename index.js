@@ -95,19 +95,18 @@ cron.schedule('* * * * *', async () => {
 
   const snapshot = await db.collection('appointments').get();
 
-  snapshot.forEach(async (doc) => {
-    const data = doc.data();
+  for (const doc of snapshot.docs) {
+  const data = doc.data();
 
-    const createdAt = data.createdAt.toDate();
+  const createdAt = data.createdAt.toDate();
+  const now = new Date();
+  const diffSeconds = (now - createdAt) / 1000;
 
-    const diffSeconds = (now - createdAt) / 1000;
+  if (diffSeconds > 60 && !data.reminded) {
+    console.log('צריך לשלוח תזכורת ל:', data.user);
 
-    if (diffSeconds > 60 && !data.reminded) {
-      console.log('צריך לשלוח תזכורת ל:', data.user);
-
-      await db.collection('appointments').doc(doc.id).update({
-        reminded: true
-      });
-    }
-  });
-});
+    await db.collection('appointments').doc(doc.id).update({
+      reminded: true
+    });
+  }
+}
