@@ -87,19 +87,26 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
 cron.schedule('* * * * *', async () => {
   console.log('cron עובד - בדיקה כל דקה');
 
+  const now = new Date();
+
   const snapshot = await db.collection('appointments').get();
 
-  snapshot.forEach((doc) => {
+  snapshot.forEach(async (doc) => {
     const data = doc.data();
 
-    console.log('DATA:', data);
+    const createdAt = data.createdAt.toDate();
+
+    const diffSeconds = (now - createdAt) / 1000;
+
+    if (diffSeconds > 60 && !data.reminded) {
+      console.log('צריך לשלוח תזכורת ל:', data.user);
+
+      await db.collection('appointments').doc(doc.id).update({
+        reminded: true
+      });
+    }
   });
 });
