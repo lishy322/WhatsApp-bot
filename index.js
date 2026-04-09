@@ -1,6 +1,7 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 const admin = require('firebase-admin');
+const cron = require('node-cron');
 
 // קבלת המפתח מה-ENV
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
@@ -90,4 +91,7 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+});
+cron.schedule('* * * * *', () => {
+  console.log('cron עובד - בדיקה כל דקה');
 });
