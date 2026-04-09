@@ -2,7 +2,11 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const admin = require('firebase-admin');
 
+// קבלת המפתח מה-ENV
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
+
+// תיקון ה-private key (חשוב מאוד)
+serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
