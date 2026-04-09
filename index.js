@@ -23,6 +23,7 @@ let userState = {};
 
 app.post('/webhook', async (req, res) => {
   try {
+    console.log('קיבלתי הודעה!');
     const message = (req.body.Body || '').toLowerCase().trim();
     const user = req.body.From;
 
