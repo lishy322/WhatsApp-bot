@@ -95,25 +95,11 @@ app.listen(PORT, () => {
 cron.schedule('* * * * *', async () => {
   console.log('cron עובד - בדיקה כל דקה');
 
-  const now = new Date();
-
   const snapshot = await db.collection('appointments').get();
 
-  snapshot.forEach(async (doc) => {
+  snapshot.forEach((doc) => {
     const data = doc.data();
 
-    const createdAt = new Date(data.createdAt);
-
-    const diffSeconds = (now - createdAt) / 1000;
-
-    // בדיקה: אם עברו יותר מ-60 שניות
-    if (diffSeconds > 60 && !data.reminded) {
-      console.log('צריך לשלוח תזכורת ל:', data.user);
-
-      // סימון כדי שלא ישלח פעמיים
-      await db.collection('appointments').doc(doc.id).update({
-        reminded: true
-      });
-    }
+    console.log('DATA:', data);
   });
 });
