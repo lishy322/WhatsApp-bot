@@ -1,3 +1,9 @@
+const twilio = require('twilio');
+
+const client = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
 const express = require('express');
 const bodyParser = require('body-parser');
 const admin = require('firebase-admin');
@@ -91,6 +97,11 @@ cron.schedule('* * * * *', async () => {
 
       if (diffSeconds > 60 && !data.reminded) {
         console.log('צריך לשלוח תזכורת ל:', data.user);
+        await client.messages.create({
+  from: 'whatsapp:+14155238886',
+  to: data.user,
+  body: 'תזכורת: יש לך תור שקבעת ⏰'
+});
 
         await db.collection('appointments').doc(doc.id).update({
           reminded: true
