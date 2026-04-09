@@ -9,5 +9,6 @@
     "body-parser": "^2.2.2",
     "express": "^5.2.1",
     "firebase-admin": "^13.7.0"
+    "node-cron": "^3.0.3"
   }
 }
