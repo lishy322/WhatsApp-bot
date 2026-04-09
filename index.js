@@ -1,15 +1,10 @@
-const twilio = require('twilio');
-
-const client = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
 const express = require('express');
 const bodyParser = require('body-parser');
 const admin = require('firebase-admin');
 const cron = require('node-cron');
+const twilio = require('twilio');
 
-// 🔐 Firebase מה-ENV
+// 🔐 Firebase
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
 
@@ -19,11 +14,17 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
+// 📲 Twilio
+const client = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 
 // =======================
-// 📲 WEBHOOK (WhatsApp)
+// 📩 WEBHOOK
 // =======================
 app.post('/webhook', async (req, res) => {
   try {
@@ -37,12 +38,10 @@ app.post('/webhook', async (req, res) => {
 
     let reply = '';
 
-    // התחלת תהליך
     if (message.includes('לקבוע')) {
       reply = 'יש לי שעות פנויות: 16:00, 17:00, 18:00\nאיזה שעה נוחה לך?';
     }
 
-    // בחירת שעה
     else if (message.includes(':')) {
       await db.collection('appointments').add({
         user: user,
@@ -97,22 +96,24 @@ cron.schedule('* * * * *', async () => {
 
       if (diffSeconds > 60 && !data.reminded) {
         console.log('צריך לשלוח תזכורת ל:', data.user);
-       try {
-  const msg = await client.messages.create({
-    from: 'whatsapp:+14155238886',
-    to: data.user,
-    body: 'תזכורת: יש לך תור שקבעת ⏰'
-  });
+        console.log('נכנס לשליחה...');
 
-  console.log('נשלח! SID:', msg.sid);
+        try {
+          const msg = await client.messages.create({
+            from: 'whatsapp:+14155238886',
+            to: data.user,
+            body: 'תזכורת: יש לך תור שקבעת ⏰'
+          });
 
-} catch (err) {
-  console.error('שגיאה בשליחה:', err.message);
-}
+          console.log('נשלח! SID:', msg.sid);
 
-        await db.collection('appointments').doc(doc.id).update({
-          reminded: true
-        });
+          await db.collection('appointments').doc(doc.id).update({
+            reminded: true
+          });
+
+        } catch (err) {
+          console.error('שגיאה בשליחה:', err.message);
+        }
       }
     }
 
