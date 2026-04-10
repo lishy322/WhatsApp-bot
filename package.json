@@ -12,5 +12,6 @@
     "firebase-admin": "^11.10.1",
     "node-cron": "^3.0.2",
     "body-parser": "^1.20.2"
+    "openai": "^4.0.0"
   }
 }
