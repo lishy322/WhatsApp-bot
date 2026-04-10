@@ -16,6 +16,10 @@ const serviceAccount = {
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 const twilio = require('twilio');
 
 const app = express();
