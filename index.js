@@ -1,23 +1,14 @@
 const express = require('express');
 const bodyParser = require('body-parser');
-const admin = require('firebase-admin');
 const cron = require('node-cron');
+const admin = require('firebase-admin');
 const twilio = require('twilio');
 
-// =======================
-// 🔐 Firebase
-// =======================
-const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
-serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
-
-const db = admin.firestore();
+const app = express();
+app.use(bodyParser.urlencoded({ extended: false }));
 
 // =======================
-// 📲 Twilio
+// 🔐 Twilio
 // =======================
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
@@ -25,160 +16,55 @@ const client = twilio(
 );
 
 // =======================
-const app = express();
-app.get('/test', async (req, res) => {
-  try {
-    const msg = await client.messages.create({
-      from: 'whatsapp:+14155238886',
-      to: 'whatsapp:+972503155522', // המספר שלך
-      body: '🚀 בדיקה - אם אתה רואה את זה, הכל עובד!'
+// 🔥 Firebase
+// =======================
+admin.initializeApp({
+  credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_KEY))
+});
+
+const db = admin.firestore();
+
+// =======================
+// 📩 Webhook WhatsApp
+// =======================
+app.post('/whatsapp', async (req, res) => {
+  const incomingMsg = req.body.Body;
+  const user = req.body.From;
+
+  console.log('USER:', user);
+  console.log('MESSAGE:', incomingMsg);
+
+  let reply = '';
+
+  if (incomingMsg.includes('לקבוע')) {
+    reply = 'מעולה! שלח שעה (למשל 16:00)';
+  } else if (incomingMsg.match(/\d{1,2}:\d{2}/)) {
+    await db.collection('appointments').add({
+      user: user,
+      time: incomingMsg,
+      createdAt: new Date(),
+      reminded: false
     });
 
-    console.log('✅ נשלח! SID:', msg.sid);
-
-    res.send('✅ הודעה נשלחה! בדוק וואטסאפ');
-  } catch (err) {
-    console.error('❌ שגיאה:', err.message);
-    res.send('❌ שגיאה: ' + err.message);
+    reply = 'נקבע! תקבל תזכורת ⏰';
+  } else {
+    reply = 'לא הבנתי, נסה שוב';
   }
-});
-app.use(bodyParser.urlencoded({ extended: false }));
 
-// =======================
-// 📩 WEBHOOK
-// =======================
-app.post('/webhook', async (req, res) => {
-  try {
-    console.log('קיבלתי הודעה!');
-
-    const message = (req.body.Body || '').trim();
-    const user = req.body.From;
-
-    console.log('USER:', user);
-    console.log('MESSAGE:', message);
-
-    let reply = '';
-
-    if (message.includes('לקבוע')) {
-      reply = 'יש לי שעות פנויות: 16:00, 17:00, 18:00\nאיזה שעה נוחה לך?';
-    }
-
-    else if (message.includes(':')) {
-      await db.collection('appointments').add({
-        user: user,
-        time: message,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        reminded: false
-      });
-
-      reply = `סגור! קבעתי לך תור ב-${message} ✅`;
-    }
-
-    else {
-      reply = 'לא הבנתי 🤔 כתוב "לקבוע תור"';
-    }
-
-    res.set('Content-Type', 'text/xml');
-    res.send(`
-      <Response>
-        <Message>${reply}</Message>
-      </Response>
-    `);
-
-  } catch (err) {
-    console.error('ERROR:', err);
-
-    res.set('Content-Type', 'text/xml');
-    res.send(`
-      <Response>
-        <Message>שגיאה, נסה שוב</Message>
-      </Response>
-    `);
-  }
+  res.set('Content-Type', 'text/xml');
+  res.send(`
+    <Response>
+      <Message>${reply}</Message>
+    </Response>
+  `);
 });
 
 // =======================
-// 🧪 TEST ROUTE (חשוב!)
+// 🧪 TEST לשליחת הודעה
 // =======================
 app.get('/test', async (req, res) => {
   try {
-    console.log('🚀 מנסה לשלוח הודעת בדיקה...');
-
-    const msg = await client.messages.create({
-      from: 'whatsapp:+14155238886',
-      to: 'whatsapp:+972503155522', // ⚠️ שים כאן את המספר שלך
-      body: 'בדיקה 🔥 זה עובד!'
-    });
-
-    console.log('נשלח! SID:', msg.sid);
-
-    res.send('✅ נשלח!');
-
-  } catch (err) {
-    console.error('❌ שגיאה:', err.message);
-    res.send('❌ שגיאה: ' + err.message);
-  }
-});
-
-// =======================
-// 🔔 CRON (תזכורות)
-// =======================
-let isRunning = false;
-
-cron.schedule('*/2 * * * *', async () => {
-  if (isRunning) return;
-  isRunning = true;
-
-  try {
-    console.log('cron עובד');
-
-    const snapshot = await db.collection('appointments').get();
-    const now = new Date();
-
-    for (const doc of snapshot.docs) {
-      const data = doc.data();
-
-      if (!data.createdAt) continue;
-
-      const createdAt = data.createdAt.toDate();
-      const diffSeconds = (now - createdAt) / 1000;
-
-      if (diffSeconds > 60 && !data.reminded) {
-        console.log('צריך לשלוח תזכורת ל:', data.user);
-        console.log('🚀 שולח הודעה...');
-
-        try {
-          const msg = await client.messages.create({
-            from: 'whatsapp:+14155238886',
-            to: data.user,
-            body: 'תזכורת: יש לך תור שקבעת ⏰'
-          });
-
-          console.log('נשלח! SID:', msg.sid);
-
-          await db.collection('appointments').doc(doc.id).update({
-            reminded: true
-          });
-
-        } catch (err) {
-          console.error('❌ שגיאה בשליחה:', err.message);
-        }
-      }
-    }
-
-  } catch (err) {
-    console.error('CRON ERROR:', err);
-  }
-
-  isRunning = false;
-});
-
-// =======================
-// 🚀 SERVER
-// =======================
-app.get('/test', async (req, res) => {
-  try {
-    console.log('🚀 בדיקת שליחה הופעלה');
+    console.log('🚀 TEST עובד');
 
     const msg = await client.messages.create({
       from: 'whatsapp:+14155238886',
@@ -186,16 +72,58 @@ app.get('/test', async (req, res) => {
       body: '🔥 בדיקה - אם קיבלת זה עובד!'
     });
 
-    console.log('✅ הודעה נשלחה:', msg.sid);
-
+    console.log('✅ נשלח:', msg.sid);
     res.send('✅ נשלח');
   } catch (err) {
     console.error('❌ שגיאה:', err.message);
-    res.send('❌ שגיאה: ' + err.message);
+    res.send('❌ ' + err.message);
   }
 });
+
+// =======================
+// ⏰ CRON תזכורות
+// =======================
+cron.schedule('* * * * *', async () => {
+  console.log('⏰ בדיקת תזכורות...');
+
+  const snapshot = await db.collection('appointments').get();
+  const now = new Date();
+
+  for (const doc of snapshot.docs) {
+    const data = doc.data();
+
+    if (!data.createdAt) continue;
+
+    const createdAt = new Date(data.createdAt);
+    const diff = (now - createdAt) / 1000;
+
+    if (diff > 60 && !data.reminded) {
+      console.log('📤 שולח תזכורת ל:', data.user);
+
+      try {
+        await client.messages.create({
+          from: 'whatsapp:+14155238886',
+          to: data.user,
+          body: `⏰ תזכורת לתור שלך ב-${data.time}`
+        });
+
+        await db.collection('appointments').doc(doc.id).update({
+          reminded: true
+        });
+
+        console.log('✅ תזכורת נשלחה');
+      } catch (err) {
+        console.error('❌ שגיאה בשליחה:', err.message);
+      }
+    }
+  }
+});
+
+// =======================
+// 🚀 SERVER
+// =======================
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
