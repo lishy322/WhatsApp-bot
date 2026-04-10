@@ -67,16 +67,29 @@ app.post('/webhook', async (req, res) => {
 
   console.log('📩 הודעה נכנסה:', incomingMsg);
 
-  let reply = '';
+ let reply = '';
 
-  if (incomingMsg === 'היי') {
-    reply = 'שלום! 👋 איך אפשר לעזור?';
-  } else if (incomingMsg === 'מחיר') {
-    reply = 'המחיר הוא 100₪ 💰';
-  } else {
-    reply = 'לא הבנתי 🤔 תכתוב "היי"';
-  }
+try {
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      {
+        role: "system",
+        content: "אתה נציג שירות של עסק. תענה קצר, ברור, בעברית."
+      },
+      {
+        role: "user",
+        content: incomingMsg
+      }
+    ],
+  });
 
+  reply = completion.choices[0].message.content;
+
+} catch (err) {
+  console.error(err);
+  reply = "מצטער, יש תקלה כרגע 😅";
+}
   // שמירה ב-Firebase (אופציונלי אבל טוב)
   try {
     await db.collection('messages').add({
