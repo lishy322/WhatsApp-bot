@@ -42,7 +42,8 @@ const client = twilio(
 const availableSlots = ["10:00", "12:00", "14:00", "16:00"];
 
 function isBookingRequest(text) {
-  return text.includes("תור") || text.includes("לקבוע");
+  const t = text.trim();
+  return t.includes("תור") || t.includes("לקבוע");
 }
 
 function isTimeSelected(text) {
@@ -62,7 +63,7 @@ app.post('/webhook', async (req, res) => {
   try {
     /* ================= שלב 1: בקשת תור ================= */
 
-    if (isBookingRequest(incomingMsg)) {
+    if (true) {
       reply = `יש לנו שעות פנויות:\n${availableSlots.join(", ")}\nאיזו שעה נוחה לך?`;
     }
 
