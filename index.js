@@ -132,7 +132,26 @@ app.post("/whatsapp", async (req, res) => {
   ],
 });
 
-const data = JSON.parse(ai.choices[0].message.content);
+console.log("AI RAW:", ai.choices[0].message.content);
+
+let aiText = ai.choices[0].message.content;
+
+// ניקוי ```json אם קיים
+aiText = aiText.replace(/```json/g, "").replace(/```/g, "").trim();
+
+let data;
+
+try {
+  data = JSON.parse(aiText);
+} catch (e) {
+  console.error("JSON ERROR:", aiText);
+
+  data = {
+    intent: "other",
+    time: null,
+    reply: "לא הבנתי לגמרי 😅 תוכל לנסח שוב או לבחור שעה?"
+  };
+}
       if (data.intent === "book") {
   const slots = await getAvailableSlots();
 
