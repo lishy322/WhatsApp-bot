@@ -173,9 +173,9 @@ const data = JSON.parse(ai.choices[0].message.content);
 
     // ================= סיום =================
     else {
-      reply = "רוצה לקבוע תור נוסף? 🙂 כתוב: לקבוע תור";
-      user.step = "ai";
-    }
+  user.step = "ai";
+  reply = "בכיף 🙂 איך אפשר לעזור?";
+}
 
     res.send(`<Response><Message>${reply}</Message></Response>`);
   } catch (error) {
