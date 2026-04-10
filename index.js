@@ -106,19 +106,46 @@ app.post("/whatsapp", async (req, res) => {
 
       // AI רגיל
       const ai = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content:
-              "אתה נציג שירות בעברית. קצר, ברור, מזמין לקבוע תור.",
-          },
-          {
-            role: "user",
-            content: incomingMsg,
-          },
-        ],
-      });
+  model: "gpt-4o-mini",
+  messages: [
+    {
+      role: "system",
+      content: `
+תחזיר תשובה רק בפורמט JSON:
+
+{
+  "intent": "book / other",
+  "time": "16:00 או null",
+  "reply": "תשובה ללקוח"
+}
+
+חוקים:
+- אם הלקוח רוצה לקבוע תור → intent = book
+- אם הוא כתב שעה → תכניס אותה ל-time
+- אחרת → intent = other
+- תמיד תענה בעברית
+`,
+    },
+    {
+      role: "user",
+      content: incomingMsg,
+    },
+  ],
+});
+
+const data = JSON.parse(ai.choices[0].message.content);
+      if (data.intent === "book") {
+  const slots = await getAvailableSlots();
+
+  if (data.time && slots.includes(data.time)) {
+    await bookAppointment(from, data.time);
+    reply = `מעולה! 🎉 התור נקבע ל-${data.time}`;
+  } else {
+    reply = "יש שעות פנויות: " + slots.join(", ");
+  }
+} else {
+  reply = data.reply;
+}
 
       reply = ai.choices[0].message.content;
     }
