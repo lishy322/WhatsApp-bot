@@ -1,11 +1,17 @@
-console.log("🔥 ENV CHECK:");
-console.log("TWILIO_ACCOUNT_SID:", !!process.env.TWILIO_ACCOUNT_SID);
-console.log("TWILIO_AUTH_TOKEN:", !!process.env.TWILIO_AUTH_TOKEN);
-console.log("FIREBASE_KEY:", !!process.env.FIREBASE_KEY);
+require('dotenv').config();
+
 const express = require('express');
-const bodyParser = require('body-parser');
-const cron = require('node-cron');
 const admin = require('firebase-admin');
+const twilio = require('twilio');
+
+const app = express();
+app.use(express.urlencoded({ extended: false }));
+app.use(express.json());
+
+/* =========================
+   🔥 FIREBASE CONFIG
+========================= */
+
 const serviceAccount = {
   type: "service_account",
   project_id: process.env.FIREBASE_PROJECT_ID,
@@ -17,136 +23,44 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
-const twilio = require('twilio');
+const db = admin.firestore();
 
-const app = express();
-app.use(bodyParser.urlencoded({ extended: false }));
+/* =========================
+   📲 TWILIO CONFIG
+========================= */
 
-// =======================
-// 🔐 Twilio
-// =======================
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
 
-// =======================
-// 🔥 Firebase
-// =======================
-admin.initializeApp({
-  const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
+/* =========================
+   🚀 TEST ROUTE
+========================= */
 
-// תיקון חשוב ל־private key
-serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
-const db = admin.firestore();
-
-// =======================
-// 📩 Webhook WhatsApp
-// =======================
-app.post('/whatsapp', async (req, res) => {
-  const incomingMsg = req.body.Body;
-  const user = req.body.From;
-
-  console.log('USER:', user);
-  console.log('MESSAGE:', incomingMsg);
-
-  let reply = '';
-
-  if (incomingMsg.includes('לקבוע')) {
-    reply = 'מעולה! שלח שעה (למשל 16:00)';
-  } else if (incomingMsg.match(/\d{1,2}:\d{2}/)) {
-    await db.collection('appointments').add({
-      user: user,
-      time: incomingMsg,
-      createdAt: new Date(),
-      reminded: false
-    });
-
-    reply = 'נקבע! תקבל תזכורת ⏰';
-  } else {
-    reply = 'לא הבנתי, נסה שוב';
-  }
-
-  res.set('Content-Type', 'text/xml');
-  res.send(`
-    <Response>
-      <Message>${reply}</Message>
-    </Response>
-  `);
-});
-
-// =======================
-// 🧪 TEST לשליחת הודעה
-// =======================
 app.get('/test', async (req, res) => {
   try {
-    console.log('🚀 TEST עובד');
+    console.log('🚀 שליחת הודעת בדיקה');
 
     const msg = await client.messages.create({
-      from: 'whatsapp:+14155238886',
-      to: 'whatsapp:+972503155522',
-      body: '🔥 בדיקה - אם קיבלת זה עובד!'
+      from: process.env.TWILIO_WHATSAPP_NUMBER,
+      to: 'whatsapp:+972503155522', // תשנה למספר שלך
+      body: '🔥 הבוט עובד תקין!',
     });
 
-    console.log('✅ נשלח:', msg.sid);
-    res.send('✅ נשלח');
+    res.send('✅ הודעה נשלחה: ' + msg.sid);
   } catch (err) {
-    console.error('❌ שגיאה:', err.message);
-    res.send('❌ ' + err.message);
+    console.error(err);
+    res.status(500).send('❌ שגיאה: ' + err.message);
   }
 });
 
-// =======================
-// ⏰ CRON תזכורות
-// =======================
-cron.schedule('* * * * *', async () => {
-  console.log('⏰ בדיקת תזכורות...');
+/* =========================
+   🌐 SERVER
+========================= */
 
-  const snapshot = await db.collection('appointments').get();
-  const now = new Date();
-
-  for (const doc of snapshot.docs) {
-    const data = doc.data();
-
-    if (!data.createdAt) continue;
-
-    const createdAt = new Date(data.createdAt);
-    const diff = (now - createdAt) / 1000;
-
-    if (diff > 60 && !data.reminded) {
-      console.log('📤 שולח תזכורת ל:', data.user);
-
-      try {
-        await client.messages.create({
-          from: 'whatsapp:+14155238886',
-          to: data.user,
-          body: `⏰ תזכורת לתור שלך ב-${data.time}`
-        });
-
-        await db.collection('appointments').doc(doc.id).update({
-          reminded: true
-        });
-
-        console.log('✅ תזכורת נשלחה');
-      } catch (err) {
-        console.error('❌ שגיאה בשליחה:', err.message);
-      }
-    }
-  }
-});
-
-// =======================
-// 🚀 SERVER
-// =======================
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
