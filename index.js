@@ -90,7 +90,7 @@ app.post("/webhook", async (req, res) => {
 });
 
       if (selected) {
-        reply = `מעולה! 🎉 קבעתי לך תור ל-${selected} ✅`;
+        reply = `מעולה 🙌\nהתור שלך נקבע ל-${selected}.\nנשמח לראותך! 😊`;
         userSession.step = "done";
       } else {
         reply = `לא זיהיתי שעה 😅\nבחר אחת מהאפשרויות:\n${availableSlots.join(
