@@ -1,3 +1,7 @@
+console.log("🔥 ENV CHECK:");
+console.log("TWILIO_ACCOUNT_SID:", !!process.env.TWILIO_ACCOUNT_SID);
+console.log("TWILIO_AUTH_TOKEN:", !!process.env.TWILIO_AUTH_TOKEN);
+console.log("FIREBASE_KEY:", !!process.env.FIREBASE_KEY);
 const express = require('express');
 const bodyParser = require('body-parser');
 const cron = require('node-cron');
