@@ -105,26 +105,26 @@ app.post("/whatsapp", async (req, res) => {
 
       // AI רגיל
       const ai = await openai.chat.completions.create({
-  model: "gpt-4o-mini",
-  messages: [
-    {
-      role: "system",
-      content: `
-תחזיר תשובה רק בפורמט JSON:
+  let data;
 
-{
-  "intent": "book / other",
-  "time": "16:00 או null",
-  "reply": "תשובה ללקוח"
+try {
+  let aiText = ai.choices[0].message.content;
+
+  console.log("AI RAW:", aiText);
+
+  aiText = aiText.replace(/```json/g, "").replace(/```/g, "").trim();
+
+  data = JSON.parse(aiText);
+
+} catch (e) {
+  console.error("AI PARSE ERROR");
+
+  data = {
+    intent: "other",
+    time: null,
+    reply: "לא הבנתי לגמרי 😅 תוכל לבחור שעה מהרשימה?"
+  };
 }
-
-חוקים:
-- אם הלקוח רוצה לקבוע תור → intent = book
-- אם הוא כתב שעה → תכניס אותה ל-time
-- אחרת → intent = other
-- תמיד תענה בעברית
-`,
-    },
     {
       role: "user",
       content: incomingMsg,
@@ -172,9 +172,13 @@ try {
     else if (user.step === "booking") {
       const slots = await getAvailableSlots();
 
-      const selected = slots.find((slot) =>
-        incomingMsg.includes(slot)
-      );
+      const selected = slots.find(slot => {
+  const short = slot.split(":")[0]; // 16 מתוך 16:00
+  return (
+    incomingMsg.includes(slot) ||
+    incomingMsg.includes(short)
+  );
+});
 
       if (selected) {
         await bookAppointment(from, selected);
