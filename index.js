@@ -19,9 +19,14 @@ const client = twilio(
 // 🔥 Firebase
 // =======================
 admin.initializeApp({
-  credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_KEY))
-});
+  const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 
+// תיקון חשוב ל־private key
+serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
 const db = admin.firestore();
 
 // =======================
