@@ -178,7 +178,7 @@ cron.schedule('*/2 * * * *', async () => {
 // =======================
 app.get('/test', async (req, res) => {
   try {
-    console.log('🚀 בדיקת שליחה הופעלה');
+    console.log('🚀 TEST עובד V2');
 
     const msg = await client.messages.create({
       from: 'whatsapp:+14155238886',
