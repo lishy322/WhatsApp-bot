@@ -6,6 +6,20 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const cron = require('node-cron');
 const admin = require('firebase-admin');
+
+let serviceAccount;
+
+try {
+  serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
+  serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+} catch (err) {
+  console.error("❌ FIREBASE_KEY לא תקין:", err.message);
+  process.exit(1);
+}
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 const twilio = require('twilio');
 
 const app = express();
