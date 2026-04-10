@@ -5,8 +5,7 @@ console.log("FIREBASE_KEY:", !!process.env.FIREBASE_KEY);
 const express = require('express');
 const bodyParser = require('body-parser');
 const cron = require('node-cron');
-cconst admin = require('firebase-admin');
-
+const admin = require('firebase-admin');
 const serviceAccount = {
   type: "service_account",
   project_id: process.env.FIREBASE_PROJECT_ID,
