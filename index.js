@@ -1,21 +1,15 @@
-const OpenAI = require('openai');
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
 const express = require('express');
 const admin = require('firebase-admin');
 const twilio = require('twilio');
 const { MessagingResponse } = require('twilio').twiml;
+const OpenAI = require('openai');
 
 const app = express();
 
-// חובה בשביל Twilio
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
-/* =========================
-   🔥 FIREBASE CONFIG
-========================= */
+/* ================= FIREBASE ================= */
 
 const serviceAccount = {
   type: "service_account",
@@ -30,74 +24,120 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-/* =========================
-   📲 TWILIO CONFIG
-========================= */
+/* ================= OPENAI ================= */
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+/* ================= TWILIO ================= */
 
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
 
-/* =========================
-   🚀 TEST ROUTE
-========================= */
+/* ================= HELPERS ================= */
 
-app.get('/test', async (req, res) => {
-  try {
-    const msg = await client.messages.create({
-      from: process.env.TWILIO_WHATSAPP_NUMBER,
-      to: 'whatsapp:+972503155522', // שים כאן את המספר שלך
-      body: '🔥 הבוט עובד!'
-    });
+const availableSlots = ["10:00", "12:00", "14:00", "16:00"];
 
-    res.send('✅ הודעה נשלחה!');
-  } catch (err) {
-    console.error(err);
-    res.send('❌ שגיאה: ' + err.message);
-  }
-});
+function isBookingRequest(text) {
+  return text.includes("תור") || text.includes("לקבוע");
+}
 
-/* =========================
-   🤖 WEBHOOK (הכי חשוב!)
-========================= */
+function isTimeSelected(text) {
+  return availableSlots.includes(text);
+}
+
+/* ================= WEBHOOK ================= */
 
 app.post('/webhook', async (req, res) => {
   const incomingMsg = req.body.Body;
+  const userId = req.body.From;
 
-  console.log('📩 הודעה נכנסה:', incomingMsg);
+  console.log('📩:', incomingMsg);
 
- let reply = '';
+  let reply = '';
 
-try {
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      {
-        role: "system",
-        content: "אתה נציג שירות של עסק. תענה קצר, ברור, בעברית."
-      },
-      {
+  try {
+    /* ================= שלב 1: בקשת תור ================= */
+
+    if (isBookingRequest(incomingMsg)) {
+      reply = `יש לנו שעות פנויות:\n${availableSlots.join(", ")}\nאיזו שעה נוחה לך?`;
+    }
+
+    /* ================= שלב 2: בחירת שעה ================= */
+
+    else if (isTimeSelected(incomingMsg)) {
+
+      await db.collection('appointments').add({
+        user: userId,
+        time: incomingMsg,
+        createdAt: new Date()
+      });
+
+      reply = `✅ התור נקבע ל-${incomingMsg}\nנשלח לך תזכורת 🙌`;
+    }
+
+    /* ================= שלב 3: AI ================= */
+
+    else {
+
+      // היסטוריה
+      let messages = [
+        {
+          role: "system",
+          content: "אתה נציג שירות אדיב, קצר, ועוזר לקבוע תורים."
+        }
+      ];
+
+      const history = await db
+        .collection('conversations')
+        .doc(userId)
+        .collection('messages')
+        .orderBy('createdAt', 'desc')
+        .limit(5)
+        .get();
+
+      history.forEach(doc => {
+        messages.unshift(doc.data());
+      });
+
+      messages.push({
         role: "user",
         content: incomingMsg
-      }
-    ],
-  });
+      });
 
-  reply = completion.choices[0].message.content;
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: messages,
+      });
 
-} catch (err) {
-  console.error(err);
-  reply = "מצטער, יש תקלה כרגע 😅";
-}
-  // שמירה ב-Firebase (אופציונלי אבל טוב)
-  try {
-    await db.collection('messages').add({
-      text: incomingMsg,
-      createdAt: new Date()
-    });
-  } catch (e) {
-    console.log('Firestore error:', e.message);
+      reply = completion.choices[0].message.content;
+
+      // שמירת שיחה
+      await db.collection('conversations')
+        .doc(userId)
+        .collection('messages')
+        .add({
+          role: "user",
+          content: incomingMsg,
+          createdAt: new Date()
+        });
+
+      await db.collection('conversations')
+        .doc(userId)
+        .collection('messages')
+        .add({
+          role: "assistant",
+          content: reply,
+          createdAt: new Date()
+        });
+    }
+
+  } catch (err) {
+    console.error(err);
+    reply = "יש תקלה קטנה 😅 נסה שוב";
   }
 
   const twiml = new MessagingResponse();
@@ -107,12 +147,10 @@ try {
   res.end(twiml.toString());
 });
 
-/* =========================
-   🌐 SERVER
-========================= */
+/* ================= SERVER ================= */
 
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 Server running on ${PORT}`);
 });
