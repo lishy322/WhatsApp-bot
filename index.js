@@ -1,3 +1,4 @@
+const lastMessageTime = {};
 const express = require("express");
 const twilio = require("twilio");
 const OpenAI = require("openai");
@@ -23,6 +24,10 @@ const sessions = {};
 const availableSlots = ["16:00", "17:00", "18:00"];
 
 // ===== WEBHOOK =====
+if (lastMessageTime[from] && Date.now() - lastMessageTime[from] < 2000) {
+  return res.send("<Response></Response>");
+}
+lastMessageTime[from] = Date.now();
 app.post("/webhook", async (req, res) => {
   const incomingMsg = req.body.Body?.trim();
   const from = req.body.From;
