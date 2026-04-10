@@ -76,10 +76,9 @@ app.post("/whatsapp", async (req, res) => {
     const user = sessions[from];
 
     // ================= שלב 1 =================
-    if (user.step === "start") {
-      reply = "שלום! 👋\nאיך אפשר לעזור?\nאפשר לכתוב למשל: לקבוע תור";
-      user.step = "ai";
-    }
+   if (user.step === "start") {
+  user.step = "ai";
+}
 
     // ================= שלב AI =================
     else if (user.step === "ai") {
