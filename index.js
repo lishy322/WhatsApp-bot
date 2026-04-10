@@ -79,9 +79,10 @@ app.post("/webhook", async (req, res) => {
 
     // שלב 3 - בחירת שעה
     else if (userSession.step === "choosing_time") {
-      const selected = availableSlots.find((slot) =>
-        incomingMsg.includes(slot)
-      );
+     const selected = availableSlots.find((slot) => {
+  const short = slot.split(":")[0]; // 16 מתוך 16:00
+  return incomingMsg.includes(slot) || incomingMsg === short;
+});
 
       if (selected) {
         reply = `מעולה! 🎉 קבעתי לך תור ל-${selected} ✅`;
