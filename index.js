@@ -4,7 +4,9 @@ const admin = require('firebase-admin');
 const cron = require('node-cron');
 const twilio = require('twilio');
 
+// =======================
 // 🔐 Firebase
+// =======================
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
 
@@ -14,12 +16,15 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
+// =======================
 // 📲 Twilio
+// =======================
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
 
+// =======================
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 
@@ -77,11 +82,39 @@ app.post('/webhook', async (req, res) => {
 });
 
 // =======================
-// 🔔 CRON - תזכורות
+// 🧪 TEST ROUTE (חשוב!)
 // =======================
-cron.schedule('* * * * *', async () => {
+app.get('/test', async (req, res) => {
   try {
-    console.log('cron עובד - בדיקה כל דקה');
+    console.log('🚀 מנסה לשלוח הודעת בדיקה...');
+
+    const msg = await client.messages.create({
+      from: 'whatsapp:+14155238886',
+      to: 'whatsapp:+972503155522', // ⚠️ שים כאן את המספר שלך
+      body: 'בדיקה 🔥 זה עובד!'
+    });
+
+    console.log('נשלח! SID:', msg.sid);
+
+    res.send('✅ נשלח!');
+
+  } catch (err) {
+    console.error('❌ שגיאה:', err.message);
+    res.send('❌ שגיאה: ' + err.message);
+  }
+});
+
+// =======================
+// 🔔 CRON (תזכורות)
+// =======================
+let isRunning = false;
+
+cron.schedule('*/2 * * * *', async () => {
+  if (isRunning) return;
+  isRunning = true;
+
+  try {
+    console.log('cron עובד');
 
     const snapshot = await db.collection('appointments').get();
     const now = new Date();
@@ -96,7 +129,7 @@ cron.schedule('* * * * *', async () => {
 
       if (diffSeconds > 60 && !data.reminded) {
         console.log('צריך לשלוח תזכורת ל:', data.user);
-        console.log('נכנס לשליחה...');
+        console.log('🚀 שולח הודעה...');
 
         try {
           const msg = await client.messages.create({
@@ -112,7 +145,7 @@ cron.schedule('* * * * *', async () => {
           });
 
         } catch (err) {
-          console.error('שגיאה בשליחה:', err.message);
+          console.error('❌ שגיאה בשליחה:', err.message);
         }
       }
     }
@@ -120,6 +153,8 @@ cron.schedule('* * * * *', async () => {
   } catch (err) {
     console.error('CRON ERROR:', err);
   }
+
+  isRunning = false;
 });
 
 // =======================
