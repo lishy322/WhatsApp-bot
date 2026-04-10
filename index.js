@@ -176,6 +176,24 @@ cron.schedule('*/2 * * * *', async () => {
 // =======================
 // 🚀 SERVER
 // =======================
+app.get('/test', async (req, res) => {
+  try {
+    console.log('🚀 בדיקת שליחה הופעלה');
+
+    const msg = await client.messages.create({
+      from: 'whatsapp:+14155238886',
+      to: 'whatsapp:+972503155522', // המספר שלך
+      body: '🔥 בדיקה: אם אתה רואה את זה — הכל עובד!'
+    });
+
+    console.log('✅ הודעה נשלחה! SID:', msg.sid);
+
+    res.send('✅ הצלחה! הודעה נשלחה לוואטסאפ');
+  } catch (err) {
+    console.error('❌ שגיאה בשליחה:', err.message);
+    res.send('❌ שגיאה: ' + err.message);
+  }
+});
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
