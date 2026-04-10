@@ -5,17 +5,14 @@ console.log("FIREBASE_KEY:", !!process.env.FIREBASE_KEY);
 const express = require('express');
 const bodyParser = require('body-parser');
 const cron = require('node-cron');
-const admin = require('firebase-admin');
+cconst admin = require('firebase-admin');
 
-let serviceAccount;
-
-try {
-  serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
-  serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
-} catch (err) {
-  console.error("❌ FIREBASE_KEY לא תקין:", err.message);
-  process.exit(1);
-}
+const serviceAccount = {
+  type: "service_account",
+  project_id: process.env.FIREBASE_PROJECT_ID,
+  private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+  client_email: process.env.FIREBASE_CLIENT_EMAIL,
+};
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
