@@ -1,27 +1,13 @@
 const express = require('express');
 const admin = require('firebase-admin');
-const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
-const db = admin.firestore();;
 const twilio = require('twilio');
-const { MessagingResponse } = require('twilio').twiml;
 const OpenAI = require('openai');
 
 const app = express();
-
 app.use(express.urlencoded({ extended: false }));
-app.use(express.json());
 
-/* ================= FIREBASE ================= */
-
-const serviceAccount = {
-  type: "service_account",
-  project_id: process.env.FIREBASE_PROJECT_ID,
-  private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-  client_email: process.env.FIREBASE_CLIENT_EMAIL,
-};
+// ================== FIREBASE ==================
+const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -29,134 +15,104 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-/* ================= OPENAI ================= */
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-/* ================= TWILIO ================= */
-
+// ================== TWILIO ==================
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
 
-/* ================= HELPERS ================= */
+// ================== OPENAI ==================
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
-const availableSlots = ["10:00", "12:00", "14:00", "16:00"];
+// ================== זמני תורים ==================
+const availableSlots = ["16:00", "17:00", "18:00"];
 
-function isBookingRequest(text) {
-  const t = text.trim();
-  return t.includes("תור") || t.includes("לקבוע");
-}
+// ================== זיכרון שיחה ==================
+const sessions = {};
 
-function isTimeSelected(text) {
-  return availableSlots.includes(text);
-}
-
-/* ================= WEBHOOK ================= */
-
+// ================== ROUTE ==================
 app.post('/webhook', async (req, res) => {
-  const incomingMsg = req.body.Body;
-  const userId = req.body.From;
+  const incomingMsg = req.body.Body.trim();
+  const from = req.body.From;
 
-  console.log('📩:', incomingMsg);
+  if (!sessions[from]) {
+    sessions[from] = { step: "start" };
+  }
 
-  let reply = '';
+  let session = sessions[from];
+  let reply = "";
 
   try {
-    /* ================= שלב 1: בקשת תור ================= */
+    // ================== שלב 1 ==================
+    if (session.step === "start") {
 
-    if (true) {
-      reply = `יש לנו שעות פנויות:\n${availableSlots.join(", ")}\nאיזו שעה נוחה לך?`;
-    }
-
-    /* ================= שלב 2: בחירת שעה ================= */
-
-    else if (isTimeSelected(incomingMsg)) {
-
-      await db.collection('appointments').add({
-        user: userId,
-        time: incomingMsg,
-        createdAt: new Date()
-      });
-
-      reply = `✅ התור נקבע ל-${incomingMsg}\nנשלח לך תזכורת 🙌`;
-    }
-
-    /* ================= שלב 3: AI ================= */
-
-    else {
-
-      // היסטוריה
-      let messages = [
-        {
-          role: "system",
-          content: "אתה נציג שירות אדיב, קצר, ועוזר לקבוע תורים."
-        }
-      ];
-
-      const history = await db
-        .collection('conversations')
-        .doc(userId)
-        .collection('messages')
-        .orderBy('createdAt', 'desc')
-        .limit(5)
-        .get();
-
-      history.forEach(doc => {
-        messages.unshift(doc.data());
-      });
-
-      messages.push({
-        role: "user",
-        content: incomingMsg
-      });
-
-      const completion = await openai.chat.completions.create({
+      // AI מבין כוונה
+      const ai = await openai.chat.completions.create({
         model: "gpt-4o-mini",
-        messages: messages,
+        messages: [
+          {
+            role: "system",
+            content: "אתה עוזר לזהות אם המשתמש רוצה לקבוע תור. תחזיר רק YES או NO."
+          },
+          {
+            role: "user",
+            content: incomingMsg
+          }
+        ],
       });
 
-      reply = completion.choices[0].message.content;
+      const intent = ai.choices[0].message.content;
 
-      // שמירת שיחה
-      await db.collection('conversations')
-        .doc(userId)
-        .collection('messages')
-        .add({
-          role: "user",
-          content: incomingMsg,
-          createdAt: new Date()
+      if (intent.includes("YES")) {
+        session.step = "choose_time";
+
+        reply = `מעולה 👍 רוצה לקבוע תור\n\nיש שעות פנויות:\n${availableSlots.join("\n")}\n\nאיזה שעה נוחה לך?`;
+      } else {
+        reply = "שלום! 👋 איך אפשר לעזור?";
+      }
+    }
+
+    // ================== שלב 2 ==================
+    else if (session.step === "choose_time") {
+
+      if (availableSlots.includes(incomingMsg)) {
+
+        await db.collection("appointments").add({
+          phone: from,
+          time: incomingMsg,
+          createdAt: new Date(),
         });
 
-      await db.collection('conversations')
-        .doc(userId)
-        .collection('messages')
-        .add({
-          role: "assistant",
-          content: reply,
-          createdAt: new Date()
-        });
+        reply = `🎉 התור נקבע ל-${incomingMsg}\nמחכים לך!`;
+
+        session.step = "done";
+      } else {
+        reply = `לא מצאתי את השעה 🤔\nבחר מתוך:\n${availableSlots.join("\n")}`;
+      }
+    }
+
+    // ================== סיום ==================
+    else {
+      session.step = "start";
+      reply = "אפשר לקבוע תור נוסף 👍";
     }
 
   } catch (err) {
     console.error(err);
-    reply = "יש תקלה קטנה 😅 נסה שוב";
+    reply = "אירעה שגיאה 😅 נסה שוב";
   }
 
-  const twiml = new MessagingResponse();
-  twiml.message(reply);
-
-  res.writeHead(200, { 'Content-Type': 'text/xml' });
-  res.end(twiml.toString());
+  res.send(`
+    <Response>
+      <Message>${reply}</Message>
+    </Response>
+  `);
 });
 
-/* ================= SERVER ================= */
-
-const PORT = process.env.PORT || 3000;
-
+// ================== SERVER ==================
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on ${PORT}`);
+  console.log("🚀 Server running on port", PORT);
 });
