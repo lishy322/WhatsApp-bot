@@ -33,35 +33,59 @@ const availableSlots = ["16:00", "17:00", "18:00"];
 const sessions = {};
 
 // ================== ROUTE ==================
-app.post('/webhook', async (req, res) => {
-  const incomingMsg = req.body.Body.trim();
+app.post("/webhook", async (req, res) => {
+  const incomingMsg = req.body.Body;
   const from = req.body.From;
 
-  if (!sessions[from]) {
-    sessions[from] = { step: "start" };
-  }
-
-  let session = sessions[from];
   let reply = "";
 
   try {
-    // ================== שלב 1 ==================
-    if (session.step === "start") {
+    // 🤖 שליחת הודעה ל-AI
+    const aiResponse = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: `
+אתה בוט קביעת תורים.
+ענה בעברית.
+אם מישהו רוצה לקבוע תור:
+- הצע שעות: 16:00, 17:00, 18:00
+- אם הוא בוחר שעה – אשר את התור
 
-      // AI מבין כוונה
-      const ai = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: "אתה עוזר לזהות אם המשתמש רוצה לקבוע תור. תחזיר רק YES או NO."
-          },
-          {
-            role: "user",
-            content: incomingMsg
-          }
-        ],
-      });
+אם לא ברור – שאל שאלה.
+          `,
+        },
+        {
+          role: "user",
+          content: incomingMsg,
+        },
+      ],
+    });
+
+    reply = aiResponse.choices[0].message.content;
+
+    // 💾 שמירה בפיירבייס (לא חובה אבל טוב)
+    await db.collection("messages").add({
+      from,
+      message: incomingMsg,
+      reply,
+      createdAt: new Date(),
+    });
+
+  } catch (err) {
+    console.error("AI ERROR:", err);
+    reply = "משהו השתבש, נסה שוב 🙏";
+  }
+
+  // 📤 שליחה לוואטסאפ
+  res.set("Content-Type", "text/xml");
+  res.send(`
+    <Response>
+      <Message>${reply}</Message>
+    </Response>
+  `);
+});
 
       const intent = ai.choices[0].message.content;
 
