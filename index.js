@@ -26,6 +26,22 @@ const client = twilio(
 
 // =======================
 const app = express();
+app.get('/test', async (req, res) => {
+  try {
+    const msg = await client.messages.create({
+      from: 'whatsapp:+14155238886',
+      to: 'whatsapp:+972503155522', // המספר שלך
+      body: '🚀 בדיקה - אם אתה רואה את זה, הכל עובד!'
+    });
+
+    console.log('✅ נשלח! SID:', msg.sid);
+
+    res.send('✅ הודעה נשלחה! בדוק וואטסאפ');
+  } catch (err) {
+    console.error('❌ שגיאה:', err.message);
+    res.send('❌ שגיאה: ' + err.message);
+  }
+});
 app.use(bodyParser.urlencoded({ extended: false }));
 
 // =======================
