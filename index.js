@@ -178,19 +178,19 @@ cron.schedule('*/2 * * * *', async () => {
 // =======================
 app.get('/test', async (req, res) => {
   try {
-    console.log('🚀 TEST עובד V2');
+    console.log('🚀 בדיקת שליחה הופעלה');
 
     const msg = await client.messages.create({
       from: 'whatsapp:+14155238886',
-      to: 'whatsapp:+972503155522', // המספר שלך
-      body: '🔥 בדיקה: אם אתה רואה את זה — הכל עובד!'
+      to: 'whatsapp:+972503155522',
+      body: '🔥 בדיקה - אם קיבלת זה עובד!'
     });
 
-    console.log('✅ הודעה נשלחה! SID:', msg.sid);
+    console.log('✅ הודעה נשלחה:', msg.sid);
 
-    res.send('✅ הצלחה! הודעה נשלחה לוואטסאפ');
+    res.send('✅ נשלח');
   } catch (err) {
-    console.error('❌ שגיאה בשליחה:', err.message);
+    console.error('❌ שגיאה:', err.message);
     res.send('❌ שגיאה: ' + err.message);
   }
 });
