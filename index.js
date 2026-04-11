@@ -11,7 +11,7 @@ app.get("/", (req, res) => {
   res.send("Server is alive");
 });
 
-// ===== Firebase =====
+// ===== Firebase (עם הגנה מקריסה) =====
 let db = null;
 
 try {
@@ -22,11 +22,10 @@ try {
   });
 
   db = admin.firestore();
-
   console.log("✅ Firebase connected");
 
 } catch (err) {
-  console.log("❌ Firebase failed - running without DB");
+  console.log("❌ Firebase not connected - working without DB");
 }
 
 // ===== OpenAI =====
@@ -45,7 +44,7 @@ app.post("/webhook", async (req, res) => {
   const incomingMsg = req.body.Body;
   const user = req.body.From;
 
-  console.log("📩 הודעה:", incomingMsg);
+  console.log("📩 Incoming:", incomingMsg);
 
   let reply = "";
 
@@ -76,15 +75,11 @@ app.post("/webhook", async (req, res) => {
     try {
       let txt = ai.output[0].content[0].text;
 
-      console.log("🤖 AI RAW:", txt);
-
       txt = txt.replace(/```json/g, "").replace(/```/g, "").trim();
 
       data = JSON.parse(txt);
 
-    } catch (e) {
-      console.log("JSON ERROR");
-
+    } catch {
       data = { intent: "other", time: null };
     }
 
@@ -93,7 +88,7 @@ app.post("/webhook", async (req, res) => {
       reply = "שלום! 👋 רוצה לקבוע תור?";
     }
 
-    // ===== בקשת תור =====
+    // ===== קביעת תור =====
     else if (data.intent === "book") {
 
       if (!data.time) {
@@ -105,25 +100,29 @@ app.post("/webhook", async (req, res) => {
       }
 
       else {
-        // ===== בדיקה אם תפוס =====
+        // ===== אם אין Firebase =====
         if (!db) {
-  reply = "⚠️ המערכת זמנית לא שומרת תורים";
-} else {
-  const snapshot = await db.collection("appointments")
-  .where("time", "==", data.time)
-  .get();
+          reply = `🎉 נקבע תור ל-${data.time} (לא נשמר במערכת)`;
+        }
 
-if (!snapshot.empty) {
-  reply = `התור תפוס 😞`;
-} else {
-  await db.collection("appointments").add({
-    user,
-    time: data.time,
-    createdAt: new Date()
-  });
+        else {
+          const snapshot = await db.collection("appointments")
+            .where("time", "==", data.time)
+            .get();
 
-  reply = `🎉 התור נקבע ל-${data.time}`;
-}
+          if (!snapshot.empty) {
+            reply = `התור תפוס 😞\nבחר שעה אחרת:\n${availableSlots.join(", ")}`;
+          } else {
+            await db.collection("appointments").add({
+              user,
+              time: data.time,
+              createdAt: new Date()
+            });
+
+            reply = `🎉 התור נקבע ל-${data.time}`;
+          }
+        }
+      }
     }
 
     // ===== ברירת מחדל =====
