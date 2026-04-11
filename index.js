@@ -1,11 +1,13 @@
+require("dotenv").config();
 const express = require("express");
-const admin = require("firebase-admin");
+const bodyParser = require("body-parser");
 const twilio = require("twilio");
 
-const app = express();
-app.use(express.urlencoded({ extended: false }));
+const OpenAI = require("openai");
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ================= FIREBASE =================
+const admin = require("firebase-admin");
+
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 
 admin.initializeApp({
@@ -14,31 +16,24 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-// ================= TWILIO =================
-const client = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
+const app = express();
+app.use(bodyParser.urlencoded({ extended: false }));
 
-// ================= סלוטים =================
-function generateSlots(start, end) {
-  const slots = [];
-  let current = new Date(`1970-01-01T${start}:00`);
-  const finish = new Date(`1970-01-01T${end}:00`);
+// ====================== פונקציות עזר ======================
 
-  while (current <= finish) {
-    const h = current.getHours().toString().padStart(2, "0");
-    const m = current.getMinutes().toString().padStart(2, "0");
-    slots.push(`${h}:${m}`);
-    current.setMinutes(current.getMinutes() + 15);
-  }
+// תאריך עברי יפה
+function formatDateHebrew(dateStr) {
+  const days = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
+  const date = new Date(dateStr);
 
-  return slots;
+  const dayName = days[date.getDay()];
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+
+  return `יום ${dayName} ה-${day}/${month}`;
 }
 
-const availableSlots = generateSlots("16:00", "20:00");
-
-// ================= תאריך =================
+// היום / מחר
 function extractDate(msg) {
   const today = new Date();
 
@@ -49,229 +44,196 @@ function extractDate(msg) {
   return today.toISOString().split("T")[0];
 }
 
-// ================= משך טיפול =================
-function getDuration(type) {
-  return type === "female" ? 45 : 15;
-}
+// יום בשבוע
+function extractDayFromText(msg) {
+  const daysMap = {
+    "ראשון": 0,
+    "שני": 1,
+    "שלישי": 2,
+    "רביעי": 3,
+    "חמישי": 4,
+    "שישי": 5,
+    "שבת": 6,
+  };
 
-// ================= סלוטים לחסימה =================
-function getSlotsToBlock(startTime, duration) {
-  const result = [];
-  let [hour, minute] = startTime.split(":").map(Number);
+  for (let day in daysMap) {
+    if (msg.includes(day)) {
+      const today = new Date();
+      const currentDay = today.getDay();
+      let targetDay = daysMap[day];
 
-  let total = 0;
+      let diff = targetDay - currentDay;
+      if (diff <= 0) diff += 7;
 
-  while (total < duration) {
-    result.push(
-      `${hour.toString().padStart(2, "0")}:${minute
-        .toString()
-        .padStart(2, "0")}`
-    );
+      const result = new Date();
+      result.setDate(today.getDate() + diff);
 
-    minute += 15;
-    if (minute >= 60) {
-      minute = 0;
-      hour += 1;
+      return result.toISOString().split("T")[0];
     }
-
-    total += 15;
   }
 
-  return result;
+  return null;
 }
 
-// ================= שעות פנויות =================
-async function getFreeSlots(date) {
-  const snapshot = await db
-    .collection("appointments")
-    .where("date", "==", date)
-    .get();
+// זיהוי שעה חכם
+function extractTime(msg) {
+  const match = msg.match(/\d{1,2}(:\d{1,2})?/);
 
-  const taken = [];
-  snapshot.forEach(doc => taken.push(doc.data().time));
+  if (!match) return null;
 
-  return availableSlots.filter(t => !taken.includes(t)).slice(0, 3);
+  let [h, m = "00"] = match[0].split(":");
+
+  let minute = parseInt(m);
+
+  if (minute < 15) m = "00";
+  else if (minute < 30) m = "15";
+  else if (minute < 45) m = "30";
+  else m = "45";
+
+  return `${h.padStart(2, "0")}:${m}`;
 }
 
-// ================= STATE =================
-async function getUserState(user) {
-  const doc = await db.collection("sessions").doc(user).get();
-  return doc.exists ? doc.data() : {};
-}
-
-async function setUserState(user, data) {
-  await db.collection("sessions").doc(user).set(data, { merge: true });
-}
-
-// ================= תזכורות =================
-async function sendReminders() {
-  const now = new Date();
-
-  const snapshot = await db.collection("appointments").get();
-
-  snapshot.forEach(async (doc) => {
-    const data = doc.data();
-    const appointmentTime = new Date(`${data.date}T${data.time}:00`);
-
-    const diffMinutes = (appointmentTime - now) / 60000;
-    const diffHours = diffMinutes / 60;
-
-    // יום לפני (~24 שעות)
-    if (diffHours > 23 && diffHours < 25 && !data.remindedDay) {
-      await client.messages.create({
-        from: process.env.TWILIO_WHATSAPP_NUMBER,
-        to: data.user,
-        body: `📅 תזכורת: יש לך תור מחר בשעה ${data.time}`,
-      });
-
-      await doc.ref.update({ remindedDay: true });
+// שעות זמינות (כל 15 דקות)
+function generateSlots() {
+  const slots = [];
+  for (let h = 16; h <= 20; h++) {
+    for (let m of ["00", "15", "30", "45"]) {
+      slots.push(`${String(h).padStart(2, "0")}:${m}`);
     }
-
-    // שעה לפני
-    if (diffMinutes > 59 && diffMinutes < 61 && !data.remindedHour) {
-      await client.messages.create({
-        from: process.env.TWILIO_WHATSAPP_NUMBER,
-        to: data.user,
-        body: `⏰ תזכורת: יש לך תור בעוד שעה (${data.time})`,
-      });
-
-      await doc.ref.update({ remindedHour: true });
-    }
-  });
+  }
+  return slots;
 }
 
-setInterval(sendReminders, 60000);
+// ====================== מצב שיחה ======================
 
-// ================= WHATSAPP =================
-app.post("/whatsapp", async (req, res) => {
+const userState = {};
+
+// ====================== ראוט ======================
+
+app.post("/webhook", async (req, res) => {
   const incomingMsg = req.body.Body;
   const user = req.body.From;
 
-  let state = await getUserState(user);
-  let reply = "";
+  const twiml = new twilio.twiml.MessagingResponse();
 
-  const today = new Date().toISOString().split("T")[0];
+  try {
+    if (!userState[user]) {
+      userState[user] = {
+        step: "start",
+        date: null,
+        time: null,
+        type: null,
+      };
+    }
 
-  // ================= בדיקת תור קיים =================
-  const existing = await db
-    .collection("appointments")
-    .where("user", "==", user)
-    .where("date", ">=", today)
-    .limit(1)
-    .get();
+    let state = userState[user];
+    let reply = "";
 
-  const hasAppointment = !existing.empty;
-  let groupId = null;
+    const availableSlots = generateSlots();
 
-  if (hasAppointment) {
-    groupId = existing.docs[0].data().groupId;
-  }
+    // ====================== זיהוי תאריך ======================
+    const dayFromText = extractDayFromText(incomingMsg);
 
-  // ================= ביטול =================
-  if (incomingMsg.includes("לבטל") && hasAppointment) {
-    const snapshot = await db
-      .collection("appointments")
-      .where("groupId", "==", groupId)
-      .get();
+    if (incomingMsg.includes("היום") || incomingMsg.includes("מחר")) {
+      state.date = extractDate(incomingMsg);
+    } else if (dayFromText) {
+      state.date = dayFromText;
+    }
 
-    snapshot.forEach(doc => doc.ref.delete());
+    // ====================== זיהוי שעה ======================
+    const detectedTime = extractTime(incomingMsg);
+    if (detectedTime) state.time = detectedTime;
 
-    await setUserState(user, {});
-    reply = "התור בוטל ❌";
-  }
+    // ====================== זיהוי סוג ======================
+    if (!state.type) {
+      if (incomingMsg.includes("אישה")) state.type = "female";
+      if (incomingMsg.includes("גבר")) state.type = "male";
+    }
 
-  // ================= שינוי =================
-  else if (incomingMsg.includes("לשנות") && hasAppointment) {
-    state.mode = "reschedule";
-    reply = "לאיזה יום תרצה לקבוע?";
-  }
+    // ====================== זרימת שיחה ======================
 
-  // ================= התחלה =================
-  else if (!state.date) {
-    reply = hasAppointment
-      ? `יש לך תור קיים 🙂 רוצה לשנות או לבטל?`
-      : "היי 👋 רוצה לקבוע תור? לאיזה יום?";
-  }
+    if (state.step === "start") {
+      reply = "שלום! 👋 רוצה לקבוע תור?";
+      state.step = "ask_date";
+    }
 
-  // ================= יום =================
-  else if (!state.time) {
-    const free = await getFreeSlots(state.date);
-    reply = `יש לי כמה שעות פנויות:\n${free.join(", ")}\nמה מתאים לך?`;
-  }
+    else if (state.step === "ask_date") {
+      if (!state.date) {
+        reply = "לאיזה יום תרצה לקבוע תור?";
+      } else {
+        reply = "איזה שעה נוחה לך?";
+        state.step = "ask_time";
+      }
+    }
 
-  // ================= סוג =================
-  else if (!state.type) {
-    reply = "למי התור? גבר או אישה?";
-  }
+    else if (state.step === "ask_time") {
+      if (!state.time) {
+        reply = `יש לי שעות פנויות:\n${availableSlots.slice(0, 6).join(", ")}`;
+      } else {
+        reply = "למי התור? גבר או אישה?";
+        state.step = "ask_type";
+      }
+    }
 
-  // ================= קביעה =================
-  else {
-    const duration = getDuration(state.type);
-    const slots = getSlotsToBlock(state.time, duration);
-    const newGroupId = Date.now().toString();
+    else if (state.step === "ask_type") {
+      if (!state.type) {
+        reply = "זה תור לגבר או אישה?";
+      } else {
 
-    const snapshot = await db
-      .collection("appointments")
-      .where("date", "==", state.date)
-      .get();
+        // ====================== בדיקה ב-Firebase ======================
 
-    let taken = false;
-
-    snapshot.forEach(doc => {
-      if (slots.includes(doc.data().time)) taken = true;
-    });
-
-    if (taken) {
-      reply = "התור תפוס 😞 נסה שעה אחרת";
-    } else {
-      // מחיקה אם שינוי
-      if (state.mode === "reschedule" && groupId) {
-        const old = await db
+        const snapshot = await db
           .collection("appointments")
-          .where("groupId", "==", groupId)
+          .where("date", "==", state.date)
+          .where("time", "==", state.time)
           .get();
 
-        old.forEach(doc => doc.ref.delete());
-      }
+        if (!snapshot.empty) {
+          reply = `התור תפוס 😞\nבחר שעה אחרת`;
+        } else {
+          await db.collection("appointments").add({
+            user,
+            date: state.date,
+            time: state.time,
+            type: state.type,
+            createdAt: new Date(),
+          });
 
-      for (let t of slots) {
-        await db.collection("appointments").add({
-          user,
-          time: t,
-          date: state.date,
-          groupId: newGroupId,
-          remindedDay: false,
-          remindedHour: false,
-        });
-      }
+          const prettyDate = formatDateHebrew(state.date);
 
-      reply = `🎉 התור נקבע ל-${state.time}`;
-      await setUserState(user, {});
+          reply = `🎉 נקבע תור ל-${prettyDate} בשעה ${state.time}`;
+
+          delete userState[user];
+        }
+      }
     }
+
+    else {
+      reply = "לא הבנתי 😅 תנסה שוב";
+      delete userState[user];
+    }
+
+    twiml.message(reply);
+    res.writeHead(200, { "Content-Type": "text/xml" });
+    res.end(twiml.toString());
+
+  } catch (err) {
+    console.error(err);
+    twiml.message("שגיאה זמנית 😔 נסה שוב");
+    res.writeHead(200, { "Content-Type": "text/xml" });
+    res.end(twiml.toString());
   }
-
-  // ================= עדכון STATE =================
-  if (incomingMsg.includes("היום") || incomingMsg.includes("מחר")) {
-    state.date = extractDate(incomingMsg);
-  }
-
-  if (incomingMsg.match(/\d{1,2}/)) {
-    const hour = incomingMsg.match(/\d{1,2}/)[0];
-    state.time = `${hour.padStart(2, "0")}:00`;
-  }
-
-  if (incomingMsg.includes("אישה")) state.type = "female";
-  if (incomingMsg.includes("גבר")) state.type = "male";
-
-  await setUserState(user, state);
-
-  const twiml = new twilio.twiml.MessagingResponse();
-  twiml.message(reply);
-
-  res.writeHead(200, { "Content-Type": "text/xml" });
-  res.end(twiml.toString());
 });
 
-// ================= SERVER =================
+// ====================== בדיקת שרת ======================
+
+app.get("/", (req, res) => {
+  res.send("Server is running");
+});
+
+// ====================== הפעלה ======================
+
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log("Server running"));
+app.listen(PORT, () => {
+  console.log("🚀 Server running on port", PORT);
+});
