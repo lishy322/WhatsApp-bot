@@ -26,127 +26,187 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ================= שעות =================
-const availableSlots = ["16:00", "17:00", "18:00"];
+// ================= סלוטים =================
+function generateSlots(start, end) {
+  const slots = [];
+  let current = new Date(`1970-01-01T${start}:00`);
+  const finish = new Date(`1970-01-01T${end}:00`);
 
-// ================= בדיקת שרת =================
-app.get("/", (req, res) => {
-  res.send("Server is alive 🚀");
-});
+  while (current <= finish) {
+    const h = current.getHours().toString().padStart(2, "0");
+    const m = current.getMinutes().toString().padStart(2, "0");
+    slots.push(`${h}:${m}`);
+    current.setMinutes(current.getMinutes() + 15);
+  }
+
+  return slots;
+}
+
+const availableSlots = generateSlots("16:00", "20:00");
+
+// ================= תאריך =================
+function extractDate(msg) {
+  const today = new Date();
+
+  if (msg.includes("מחר")) {
+    today.setDate(today.getDate() + 1);
+  }
+
+  return today.toISOString().split("T")[0];
+}
+
+// ================= משך טיפול =================
+function getDuration(type) {
+  return type === "female" ? 45 : 15;
+}
+
+// ================= חסימת סלוטים =================
+function getSlotsToBlock(startTime, duration) {
+  const result = [];
+  let [hour, minute] = startTime.split(":").map(Number);
+
+  let total = 0;
+
+  while (total < duration) {
+    result.push(
+      `${hour.toString().padStart(2, "0")}:${minute
+        .toString()
+        .padStart(2, "0")}`
+    );
+
+    minute += 15;
+    if (minute >= 60) {
+      minute = 0;
+      hour += 1;
+    }
+
+    total += 15;
+  }
+
+  return result;
+}
+
+// ================= STATE =================
+async function getUserState(user) {
+  const doc = await db.collection("sessions").doc(user).get();
+  return doc.exists ? doc.data() : {};
+}
+
+async function setUserState(user, data) {
+  await db.collection("sessions").doc(user).set(data, { merge: true });
+}
+
+// ================= תזכורות =================
+async function sendReminders() {
+  const now = new Date();
+
+  const snapshot = await db.collection("appointments").get();
+
+  snapshot.forEach(async (doc) => {
+    const data = doc.data();
+
+    const appointmentTime = new Date(`${data.date}T${data.time}:00`);
+    const diff = (appointmentTime - now) / 60000;
+
+    if (diff > 29 && diff < 31 && !data.reminded) {
+      await client.messages.create({
+        from: process.env.TWILIO_WHATSAPP_NUMBER,
+        to: data.user,
+        body: `⏰ תזכורת: יש לך תור היום ב-${data.time}`,
+      });
+
+      await doc.ref.update({ reminded: true });
+    }
+  });
+}
+
+setInterval(sendReminders, 60000);
 
 // ================= WHATSAPP =================
 app.post("/whatsapp", async (req, res) => {
   const incomingMsg = req.body.Body;
   const user = req.body.From;
 
-  console.log("Incoming:", incomingMsg);
-
   let reply = "";
-  const today = new Date().toISOString().split("T")[0];
+  let state = await getUserState(user);
 
-  // ================= AI =================
-  let data;
+  // ================= זיהוי שעה =================
+  let timeMatch = incomingMsg.match(/\d{1,2}(:\d{1,2})?/);
+  if (timeMatch) {
+    let t = timeMatch[0];
 
-  try {
-    const ai = await openai.responses.create({
-      model: "gpt-4.1-mini",
-      input: [
-        {
-          role: "system",
-          content: `
-תחזיר רק JSON בלי הסברים.
+    let [h, m = "00"] = t.split(":");
+    let minute = parseInt(m);
 
-{
- "intent": "book | greeting | other",
- "time": "HH:MM או null"
-}
-`,
-        },
-        {
-          role: "user",
-          content: incomingMsg,
-        },
-      ],
-    });
+    if (minute < 15) m = "00";
+    else if (minute < 30) m = "15";
+    else if (minute < 45) m = "30";
+    else m = "45";
 
-    let txt = ai.output[0].content[0].text;
-    txt = txt.replace(/```json/g, "").replace(/```/g, "").trim();
-
-    data = JSON.parse(txt);
-
-    // תיקון שעה כמו "18"
-    if (data.time && data.time.length === 2) {
-      data.time = data.time + ":00";
-    }
-
-  } catch (err) {
-    console.log("AI ERROR:", err);
-
-    // fallback שלא שובר
-    const match = incomingMsg.match(/\d{1,2}/);
-    if (match) {
-      data = {
-        intent: "book",
-        time: match[0].padStart(2, "0") + ":00",
-      };
-    } else {
-      data = { intent: "other", time: null };
-    }
+    state.time = `${h.padStart(2, "0")}:${m}`;
   }
 
-  console.log("AI DATA:", data);
+  // ================= סוג שירות =================
+  if (incomingMsg.includes("אישה")) state.type = "female";
+  if (incomingMsg.includes("גבר")) state.type = "male";
+
+  // ================= תאריך =================
+  const date = extractDate(incomingMsg);
+  state.date = date;
 
   // ================= לוגיקה =================
-  if (data.time) {
-  data.intent = "book";
-  }
-  if (data.intent === "greeting") {
-    reply = "שלום! 👋 רוצה לקבוע תור?";
+
+  if (!state.time) {
+    reply = `איזה שעה נוחה לך?\n${availableSlots.join(", ")}`;
   }
 
-  else if (data.intent === "book") {
-
-    if (!data.time) {
-      reply = `איזה שעה נוחה לך?\n${availableSlots.join(", ")}`;
-    }
-
-    else if (!availableSlots.includes(data.time)) {
-      reply = `השעה לא זמינה 😅\nבחר אחת:\n${availableSlots.join(", ")}`;
-    }
-
-    else {
-      try {
-        const snapshot = await db
-          .collection("appointments")
-          .where("time", "==", data.time)
-          .where("date", "==", today)
-          .get();
-
-        if (!snapshot.empty) {
-          reply = `התור תפוס 😞\nבחר שעה אחרת:\n${availableSlots.join(", ")}`;
-        } else {
-          await db.collection("appointments").add({
-            user,
-            time: data.time,
-            date: today,
-            createdAt: new Date(),
-          });
-
-          reply = `🎉 התור נקבע ל-${data.time}`;
-        }
-
-      } catch (err) {
-        console.log("FIREBASE ERROR:", err);
-        reply = "שגיאה זמנית 😔 נסה שוב";
-      }
-    }
+  else if (!state.type) {
+    reply = "למי התור? גבר או אישה? 🙂";
   }
 
   else {
-    reply = "אפשר לכתוב: אני רוצה תור ב16:00 🙂";
+    try {
+      const duration = getDuration(state.type);
+      const slotsNeeded = getSlotsToBlock(state.time, duration);
+
+      const snapshot = await db
+        .collection("appointments")
+        .where("date", "==", state.date)
+        .get();
+
+      let isTaken = false;
+
+      snapshot.forEach((doc) => {
+        if (slotsNeeded.includes(doc.data().time)) {
+          isTaken = true;
+        }
+      });
+
+      if (isTaken) {
+        reply = `התור מתנגש 😞\nבחר שעה אחרת:\n${availableSlots.join(", ")}`;
+      } else {
+        for (let t of slotsNeeded) {
+          await db.collection("appointments").add({
+            user,
+            time: t,
+            date: state.date,
+            reminded: false,
+            createdAt: new Date(),
+          });
+        }
+
+        reply = `🎉 התור נקבע ל-${state.time}`;
+        await setUserState(user, {}); // איפוס
+      }
+
+    } catch (err) {
+      console.log(err);
+      reply = "שגיאה זמנית 😔 נסה שוב";
+    }
   }
 
-  // ================= תשובה =================
+  await setUserState(user, state);
+
   const twiml = new twilio.twiml.MessagingResponse();
   twiml.message(reply);
 
@@ -154,6 +214,6 @@ app.post("/whatsapp", async (req, res) => {
   res.end(twiml.toString());
 });
 
-// ================= PORT =================
+// ================= SERVER =================
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log("Server running on port", PORT));
+app.listen(PORT, () => console.log("Server running"));
