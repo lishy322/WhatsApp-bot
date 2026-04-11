@@ -1,7 +1,6 @@
 const express = require("express");
 const admin = require("firebase-admin");
 const twilio = require("twilio");
-const OpenAI = require("openai");
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
@@ -20,11 +19,6 @@ const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
-
-// ================= OPENAI =================
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
 
 // ================= סלוטים =================
 function generateSlots(start, end) {
@@ -60,7 +54,7 @@ function getDuration(type) {
   return type === "female" ? 45 : 15;
 }
 
-// ================= חסימת סלוטים =================
+// ================= סלוטים לחסימה =================
 function getSlotsToBlock(startTime, duration) {
   const result = [];
   let [hour, minute] = startTime.split(":").map(Number);
@@ -86,6 +80,19 @@ function getSlotsToBlock(startTime, duration) {
   return result;
 }
 
+// ================= שעות פנויות =================
+async function getFreeSlots(date) {
+  const snapshot = await db
+    .collection("appointments")
+    .where("date", "==", date)
+    .get();
+
+  const taken = [];
+  snapshot.forEach(doc => taken.push(doc.data().time));
+
+  return availableSlots.filter(t => !taken.includes(t)).slice(0, 3);
+}
+
 // ================= STATE =================
 async function getUserState(user) {
   const doc = await db.collection("sessions").doc(user).get();
@@ -104,18 +111,31 @@ async function sendReminders() {
 
   snapshot.forEach(async (doc) => {
     const data = doc.data();
-
     const appointmentTime = new Date(`${data.date}T${data.time}:00`);
-    const diff = (appointmentTime - now) / 60000;
 
-    if (diff > 29 && diff < 31 && !data.reminded) {
+    const diffMinutes = (appointmentTime - now) / 60000;
+    const diffHours = diffMinutes / 60;
+
+    // יום לפני (~24 שעות)
+    if (diffHours > 23 && diffHours < 25 && !data.remindedDay) {
       await client.messages.create({
         from: process.env.TWILIO_WHATSAPP_NUMBER,
         to: data.user,
-        body: `⏰ תזכורת: יש לך תור היום ב-${data.time}`,
+        body: `📅 תזכורת: יש לך תור מחר בשעה ${data.time}`,
       });
 
-      await doc.ref.update({ reminded: true });
+      await doc.ref.update({ remindedDay: true });
+    }
+
+    // שעה לפני
+    if (diffMinutes > 59 && diffMinutes < 61 && !data.remindedHour) {
+      await client.messages.create({
+        from: process.env.TWILIO_WHATSAPP_NUMBER,
+        to: data.user,
+        body: `⏰ תזכורת: יש לך תור בעוד שעה (${data.time})`,
+      });
+
+      await doc.ref.update({ remindedHour: true });
     }
   });
 }
@@ -127,83 +147,121 @@ app.post("/whatsapp", async (req, res) => {
   const incomingMsg = req.body.Body;
   const user = req.body.From;
 
-  let reply = "";
   let state = await getUserState(user);
+  let reply = "";
 
-  // ================= זיהוי שעה =================
-  let timeMatch = incomingMsg.match(/\d{1,2}(:\d{1,2})?/);
-  if (timeMatch) {
-    let t = timeMatch[0];
+  const today = new Date().toISOString().split("T")[0];
 
-    let [h, m = "00"] = t.split(":");
-    let minute = parseInt(m);
+  // ================= בדיקת תור קיים =================
+  const existing = await db
+    .collection("appointments")
+    .where("user", "==", user)
+    .where("date", ">=", today)
+    .limit(1)
+    .get();
 
-    if (minute < 15) m = "00";
-    else if (minute < 30) m = "15";
-    else if (minute < 45) m = "30";
-    else m = "45";
+  const hasAppointment = !existing.empty;
+  let groupId = null;
 
-    state.time = `${h.padStart(2, "0")}:${m}`;
+  if (hasAppointment) {
+    groupId = existing.docs[0].data().groupId;
   }
 
-  // ================= סוג שירות =================
-  if (incomingMsg.includes("אישה")) state.type = "female";
-  if (incomingMsg.includes("גבר")) state.type = "male";
+  // ================= ביטול =================
+  if (incomingMsg.includes("לבטל") && hasAppointment) {
+    const snapshot = await db
+      .collection("appointments")
+      .where("groupId", "==", groupId)
+      .get();
 
-  // ================= תאריך =================
-  const date = extractDate(incomingMsg);
-  state.date = date;
+    snapshot.forEach(doc => doc.ref.delete());
 
-  // ================= לוגיקה =================
-
-  if (!state.time) {
-    reply = `איזה שעה נוחה לך?\n${availableSlots.join(", ")}`;
+    await setUserState(user, {});
+    reply = "התור בוטל ❌";
   }
 
+  // ================= שינוי =================
+  else if (incomingMsg.includes("לשנות") && hasAppointment) {
+    state.mode = "reschedule";
+    reply = "לאיזה יום תרצה לקבוע?";
+  }
+
+  // ================= התחלה =================
+  else if (!state.date) {
+    reply = hasAppointment
+      ? `יש לך תור קיים 🙂 רוצה לשנות או לבטל?`
+      : "היי 👋 רוצה לקבוע תור? לאיזה יום?";
+  }
+
+  // ================= יום =================
+  else if (!state.time) {
+    const free = await getFreeSlots(state.date);
+    reply = `יש לי כמה שעות פנויות:\n${free.join(", ")}\nמה מתאים לך?`;
+  }
+
+  // ================= סוג =================
   else if (!state.type) {
-    reply = "למי התור? גבר או אישה? 🙂";
+    reply = "למי התור? גבר או אישה?";
   }
 
+  // ================= קביעה =================
   else {
-    try {
-      const duration = getDuration(state.type);
-      const slotsNeeded = getSlotsToBlock(state.time, duration);
+    const duration = getDuration(state.type);
+    const slots = getSlotsToBlock(state.time, duration);
+    const newGroupId = Date.now().toString();
 
-      const snapshot = await db
-        .collection("appointments")
-        .where("date", "==", state.date)
-        .get();
+    const snapshot = await db
+      .collection("appointments")
+      .where("date", "==", state.date)
+      .get();
 
-      let isTaken = false;
+    let taken = false;
 
-      snapshot.forEach((doc) => {
-        if (slotsNeeded.includes(doc.data().time)) {
-          isTaken = true;
-        }
-      });
+    snapshot.forEach(doc => {
+      if (slots.includes(doc.data().time)) taken = true;
+    });
 
-      if (isTaken) {
-        reply = `התור מתנגש 😞\nבחר שעה אחרת:\n${availableSlots.join(", ")}`;
-      } else {
-        for (let t of slotsNeeded) {
-          await db.collection("appointments").add({
-            user,
-            time: t,
-            date: state.date,
-            reminded: false,
-            createdAt: new Date(),
-          });
-        }
+    if (taken) {
+      reply = "התור תפוס 😞 נסה שעה אחרת";
+    } else {
+      // מחיקה אם שינוי
+      if (state.mode === "reschedule" && groupId) {
+        const old = await db
+          .collection("appointments")
+          .where("groupId", "==", groupId)
+          .get();
 
-        reply = `🎉 התור נקבע ל-${state.time}`;
-        await setUserState(user, {}); // איפוס
+        old.forEach(doc => doc.ref.delete());
       }
 
-    } catch (err) {
-      console.log(err);
-      reply = "שגיאה זמנית 😔 נסה שוב";
+      for (let t of slots) {
+        await db.collection("appointments").add({
+          user,
+          time: t,
+          date: state.date,
+          groupId: newGroupId,
+          remindedDay: false,
+          remindedHour: false,
+        });
+      }
+
+      reply = `🎉 התור נקבע ל-${state.time}`;
+      await setUserState(user, {});
     }
   }
+
+  // ================= עדכון STATE =================
+  if (incomingMsg.includes("היום") || incomingMsg.includes("מחר")) {
+    state.date = extractDate(incomingMsg);
+  }
+
+  if (incomingMsg.match(/\d{1,2}/)) {
+    const hour = incomingMsg.match(/\d{1,2}/)[0];
+    state.time = `${hour.padStart(2, "0")}:00`;
+  }
+
+  if (incomingMsg.includes("אישה")) state.type = "female";
+  if (incomingMsg.includes("גבר")) state.type = "male";
 
   await setUserState(user, state);
 
