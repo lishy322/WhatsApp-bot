@@ -12,13 +12,22 @@ app.get("/", (req, res) => {
 });
 
 // ===== Firebase =====
-const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
+let db = null;
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
+try {
+  const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 
-const db = admin.firestore();
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
+
+  db = admin.firestore();
+
+  console.log("✅ Firebase connected");
+
+} catch (err) {
+  console.log("❌ Firebase failed - running without DB");
+}
 
 // ===== OpenAI =====
 const openai = new OpenAI({
@@ -97,8 +106,26 @@ app.post("/webhook", async (req, res) => {
 
       else {
         // ===== בדיקה אם תפוס =====
-        const snapshot = await db
-          .collection("appointments")
+        if (!db) {
+  reply = "⚠️ המערכת זמנית לא שומרת תורים, אבל נקבע לך 🙂";
+} else {
+  const snapshot = await db
+    .collection("appointments")
+    .where("time", "==", data.time)
+    .get();
+
+  if (!snapshot.empty) {
+    reply = `התור תפוס 😞`;
+  } else {
+    await db.collection("appointments").add({
+      user,
+      time: data.time,
+      createdAt: new Date(),
+    });
+
+    reply = `🎉 התור נקבע ל-${data.time}`;
+  }
+}
           .where("time", "==", data.time)
           .get();
 
