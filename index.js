@@ -11,8 +11,24 @@ app.get('/', (req, res) => {
 });
 
 // OpenAI
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+const ai = await openai.responses.create({
+  model: "gpt-4.1-mini",
+  input: [
+    {
+      role: "system",
+      content: `
+תחזיר רק JSON:
+{
+ "intent": "book | greeting | other",
+ "time": "HH:MM או null"
+}
+`
+    },
+    {
+      role: "user",
+      content: incomingMsg
+    }
+  ]
 });
 
 // זמני תורים
