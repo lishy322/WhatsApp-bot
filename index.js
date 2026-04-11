@@ -6,169 +6,152 @@ const OpenAI = require("openai");
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 
-// ===== בדיקת שרת =====
-app.get("/", (req, res) => {
-  res.send("Server is alive");
+// ================= FIREBASE =================
+const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
 });
 
-// ===== Firebase (עם הגנה מקריסה) =====
-let db = null;
+const db = admin.firestore();
 
-try {
-  const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
+// ================= TWILIO =================
+const client = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
 
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
-
-  db = admin.firestore();
-  console.log("✅ Firebase connected");
-
-} catch (err) {
-  console.log("❌ Firebase not connected - working without DB");
-}
-
-// ===== OpenAI =====
+// ================= OPENAI =================
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ===== Twilio =====
-const MessagingResponse = twilio.twiml.MessagingResponse;
-
-// ===== שעות זמינות =====
+// ================= שעות =================
 const availableSlots = ["16:00", "17:00", "18:00"];
 
-// ===== Webhook =====
-app.post("/webhook", async (req, res) => {
+// ================= בדיקת שרת =================
+app.get("/", (req, res) => {
+  res.send("Server is alive 🚀");
+});
+
+// ================= WHATSAPP =================
+app.post("/whatsapp", async (req, res) => {
   const incomingMsg = req.body.Body;
-  const today = new Date().toISOString().split("T")[0];
   const user = req.body.From;
 
-  console.log("📩 Incoming:", incomingMsg);
+  console.log("Incoming:", incomingMsg);
 
   let reply = "";
+  const today = new Date().toISOString().split("T")[0];
+
+  // ================= AI =================
+  let data;
 
   try {
-    // ===== AI =====
     const ai = await openai.responses.create({
       model: "gpt-4.1-mini",
       input: [
         {
           role: "system",
           content: `
-תחזיר רק JSON:
+תחזיר רק JSON בלי הסברים.
+
 {
  "intent": "book | greeting | other",
  "time": "HH:MM או null"
 }
-`
+`,
         },
         {
           role: "user",
-          content: incomingMsg
-        }
-      ]
+          content: incomingMsg,
+        },
+      ],
     });
 
-    let data;
+    let txt = ai.output[0].content[0].text;
+    txt = txt.replace(/```json/g, "").replace(/```/g, "").trim();
 
-try {
-  let txt = ai.output[0].content[0].text;
+    data = JSON.parse(txt);
 
-  // ניקוי טקסט
-  txt = txt.replace(/```json/g, "").replace(/```/g, "").trim();
-
-  data = JSON.parse(txt);
-
-  // תיקון שעה (18 → 18:00)
-  if (data.time && data.time.length === 2) {
-    data.time = data.time + ":00";
-  }
-
-} catch (err) {
-  console.log("AI PARSE ERROR:", err);
-
-  // 👇 fallback חכם במקום קריסה
-  const match = incomingMsg.match(/\d{1,2}/);
-  if (match) {
-    data = {
-      intent: "book",
-      time: match[0].padStart(2, "0") + ":00"
-    };
-  } else {
-    data = { intent: "other", time: null };
-  }
-}
-
-    } catch {
-      data = { intent: "other", time: null };
-    }
-
-    // ===== ברכה =====
-    if (data.intent === "greeting") {
-      reply = "שלום! 👋 רוצה לקבוע תור?";
-    }
-
-    // ===== קביעת תור =====
-    else if (data.intent === "book") {
-
-      if (!data.time) {
-        reply = `איזה שעה נוחה לך?\n${availableSlots.join(", ")}`;
-      }
-
-      else if (!availableSlots.includes(data.time)) {
-        reply = `השעה לא זמינה 😅\nבחר:\n${availableSlots.join(", ")}`;
-      }
-
-      else {
-        // ===== אם אין Firebase =====
-        if (!db) {
-          reply = `🎉 נקבע תור ל-${data.time} (לא נשמר במערכת)`;
-        }
-
-        else {
-          await db.collection("appointments").add({
-          user,
-          time: data.time,
-          date: today,
-          createdAt: new Date()
-          });
-
-          if (!snapshot.empty) {
-            reply = `התור תפוס 😞\nבחר שעה אחרת:\n${availableSlots.join(", ")}`;
-          } else {
-            await db.collection("appointments").add({
-              user,
-              time: data.time,
-              createdAt: new Date()
-            });
-
-            reply = `🎉 התור נקבע ל-${data.time}`;
-          }
-        }
-      }
-    }
-
-    // ===== ברירת מחדל =====
-    else {
-      reply = "אפשר לכתוב: אני רוצה תור ב16:00";
+    // תיקון שעה כמו "18"
+    if (data.time && data.time.length === 2) {
+      data.time = data.time + ":00";
     }
 
   } catch (err) {
-    console.error("🔥 ERROR:", err);
-    reply = "שגיאה זמנית 😔 נסה שוב";
+    console.log("AI ERROR:", err);
+
+    // fallback שלא שובר
+    const match = incomingMsg.match(/\d{1,2}/);
+    if (match) {
+      data = {
+        intent: "book",
+        time: match[0].padStart(2, "0") + ":00",
+      };
+    } else {
+      data = { intent: "other", time: null };
+    }
   }
 
-  const twiml = new MessagingResponse();
+  console.log("AI DATA:", data);
+
+  // ================= לוגיקה =================
+
+  if (data.intent === "greeting") {
+    reply = "שלום! 👋 רוצה לקבוע תור?";
+  }
+
+  else if (data.intent === "book") {
+
+    if (!data.time) {
+      reply = `איזה שעה נוחה לך?\n${availableSlots.join(", ")}`;
+    }
+
+    else if (!availableSlots.includes(data.time)) {
+      reply = `השעה לא זמינה 😅\nבחר אחת:\n${availableSlots.join(", ")}`;
+    }
+
+    else {
+      try {
+        const snapshot = await db
+          .collection("appointments")
+          .where("time", "==", data.time)
+          .where("date", "==", today)
+          .get();
+
+        if (!snapshot.empty) {
+          reply = `התור תפוס 😞\nבחר שעה אחרת:\n${availableSlots.join(", ")}`;
+        } else {
+          await db.collection("appointments").add({
+            user,
+            time: data.time,
+            date: today,
+            createdAt: new Date(),
+          });
+
+          reply = `🎉 התור נקבע ל-${data.time}`;
+        }
+
+      } catch (err) {
+        console.log("FIREBASE ERROR:", err);
+        reply = "שגיאה זמנית 😔 נסה שוב";
+      }
+    }
+  }
+
+  else {
+    reply = "אפשר לכתוב: אני רוצה תור ב16:00 🙂";
+  }
+
+  // ================= תשובה =================
+  const twiml = new twilio.twiml.MessagingResponse();
   twiml.message(reply);
 
   res.writeHead(200, { "Content-Type": "text/xml" });
   res.end(twiml.toString());
 });
 
-// ===== הפעלת שרת =====
+// ================= PORT =================
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log("🚀 Server running on port", PORT);
-});
+app.listen(PORT, () => console.log("Server running on port", PORT));
