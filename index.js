@@ -107,10 +107,9 @@ app.post("/webhook", async (req, res) => {
       else {
         // ===== בדיקה אם תפוס =====
         if (!db) {
-  reply = "⚠️ המערכת זמנית לא שומרת תורים, אבל נקבע לך 🙂";
+  reply = "⚠️ המערכת זמנית לא שומרת תורים";
 } else {
-  const snapshot = await db
-    .collection("appointments")
+  const snapshot = await db.collection("appointments")
     .where("time", "==", data.time)
     .get();
 
@@ -120,7 +119,7 @@ app.post("/webhook", async (req, res) => {
     await db.collection("appointments").add({
       user,
       time: data.time,
-      createdAt: new Date(),
+      createdAt: new Date()
     });
 
     reply = `🎉 התור נקבע ל-${data.time}`;
