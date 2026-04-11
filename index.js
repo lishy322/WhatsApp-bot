@@ -1,3 +1,6 @@
+app.get('/', (req, res) => {
+  res.send("Server is alive");
+});
 const express = require('express');
 const admin = require('firebase-admin');
 const twilio = require('twilio');
