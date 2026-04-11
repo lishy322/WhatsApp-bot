@@ -164,30 +164,33 @@ app.post("/webhook", async (req, res) => {
 // ====================== תזכורות ======================
 
 app.get("/run-reminders", async (req, res) => {
-  const now = new Date();
+  try {
+    const now = new Date();
+    const snapshot = await db.collection("appointments").get();
 
-  const snapshot = await db.collection("appointments").get();
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
 
-  for (const doc of snapshot.docs) {
-    const data = doc.data();
+      const appt = new Date(`${data.date}T${data.time}`);
+      const diffMin = (appt - now) / 60000;
 
-    const appt = new Date(`${data.date}T${data.time}`);
-    const diffMin = (appt - now) / 60000;
+      if (diffMin < 1440 && !data.reminder1) {
+        await sendWhatsApp(data.user, `📅 תזכורת: מחר יש לך תור ב-${data.time}`);
+        await doc.ref.update({ reminder1: true });
+      }
 
-    // יום לפני
-    if (diffMin < 1440 && !data.reminder1) {
-      await sendWhatsApp(data.user, `📅 תזכורת: מחר יש לך תור ב-${data.time}`);
-      await doc.ref.update({ reminder1: true });
+      if (diffMin < 60 && !data.reminder2) {
+        await sendWhatsApp(data.user, `⏰ תזכורת: התור בעוד שעה`);
+        await doc.ref.update({ reminder2: true });
+      }
     }
 
-    // שעה לפני
-    if (diffMin < 60 && !data.reminder2) {
-      await sendWhatsApp(data.user, `⏰ תזכורת: התור בעוד שעה`);
-      await doc.ref.update({ reminder2: true });
-    }
+    res.send("OK");
+
+  } catch (err) {
+    console.error("REMINDER ERROR:", err);
+    res.status(500).send("error");
   }
-
-  res.send("Reminders sent");
 });
 
 // ====================== שרת ======================
@@ -198,4 +201,12 @@ app.get("/", (req, res) => {
 
 app.listen(process.env.PORT || 8080, () => {
   console.log("🚀 Server running");
+});
+
+process.on("unhandledRejection", (err) => {
+  console.error("UNHANDLED REJECTION:", err);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION:", err);
 });
