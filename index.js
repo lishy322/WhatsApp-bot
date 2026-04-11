@@ -16,8 +16,6 @@ const twilio = require("twilio");
 const admin = require("firebase-admin");
 
 // ================= FIREBASE =================
-let serviceAccount;
-
 if (!process.env.FIREBASE_KEY) {
   console.error("Missing FIREBASE_KEY");
   process.exit(1);
