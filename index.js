@@ -3,6 +3,7 @@ const bodyParser = require("body-parser");
 const twilio = require("twilio");
 const admin = require("firebase-admin");
 
+// ================= FIREBASE =================
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 
 admin.initializeApp({
@@ -11,17 +12,16 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
+// ================= APP =================
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 
-// ====================== הגדרות ======================
-const BUSINESS_HOURS = { start: 16, end: 20 };
-
-// ====================== פונקציות ======================
+// ================= HELPERS =================
 
 function formatDateHebrew(dateStr) {
   const days = ["ראשון","שני","שלישי","רביעי","חמישי","שישי","שבת"];
   const d = new Date(dateStr);
+
   return `יום ${days[d.getDay()]} ה-${String(d.getDate()).padStart(2,"0")}/${String(d.getMonth()+1).padStart(2,"0")}`;
 }
 
@@ -42,42 +42,59 @@ function extractTime(msg) {
 
 function extractDate(msg) {
   const today = new Date();
-  if (msg.includes("מחר")) today.setDate(today.getDate()+1);
+
+  if (msg.includes("מחר")) {
+    today.setDate(today.getDate() + 1);
+    return today.toISOString().split("T")[0];
+  }
+
   return today.toISOString().split("T")[0];
 }
 
 function extractDay(msg) {
-  const map = {"ראשון":0,"שני":1,"שלישי":2,"רביעי":3,"חמישי":4,"שישי":5,"שבת":6};
+  const map = {
+    "ראשון":0,"שני":1,"שלישי":2,
+    "רביעי":3,"חמישי":4,"שישי":5,"שבת":6
+  };
+
   for (let d in map) {
     if (msg.includes(d)) {
       const today = new Date();
       let diff = map[d] - today.getDay();
       if (diff <= 0) diff += 7;
+
       const result = new Date();
-      result.setDate(today.getDate()+diff);
+      result.setDate(today.getDate() + diff);
+
       return result.toISOString().split("T")[0];
     }
   }
+
   return null;
 }
 
 async function sendWhatsApp(to, body) {
-  const client = twilio(
-    process.env.TWILIO_ACCOUNT_SID,
-    process.env.TWILIO_AUTH_TOKEN
-  );
+  try {
+    const client = twilio(
+      process.env.TWILIO_ACCOUNT_SID,
+      process.env.TWILIO_AUTH_TOKEN
+    );
 
-  await client.messages.create({
-    from: process.env.TWILIO_WHATSAPP_NUMBER,
-    to,
-    body,
-  });
+    await client.messages.create({
+      from: process.env.TWILIO_WHATSAPP_NUMBER,
+      to,
+      body,
+    });
+
+  } catch (err) {
+    console.error("Twilio error:", err.message);
+  }
 }
 
-// ====================== מצב משתמש ======================
+// ================= STATE =================
 const userState = {};
 
-// ====================== WEBHOOK ======================
+// ================= WEBHOOK =================
 app.post("/webhook", async (req, res) => {
   const msg = req.body.Body.trim();
   const user = req.body.From;
@@ -85,6 +102,8 @@ app.post("/webhook", async (req, res) => {
   const twiml = new twilio.twiml.MessagingResponse();
 
   try {
+
+    // התחלה / reset
     if (!userState[user] || msg === "היי") {
       userState[user] = { step: "date" };
       return res.end(
@@ -96,40 +115,57 @@ app.post("/webhook", async (req, res) => {
 
     // ביטול
     if (msg.includes("בטל")) {
-      const snap = await db.collection("appointments").where("user","==",user).get();
+      const snap = await db.collection("appointments")
+        .where("user","==",user)
+        .get();
+
       if (snap.empty) {
         return res.end(twiml.message("אין לך תור לבטל").toString());
       }
+
       snap.forEach(d => d.ref.delete());
+
+      delete userState[user];
+
       return res.end(twiml.message("התור בוטל ❌").toString());
     }
 
     // זיהוי נתונים
     if (!state.date) state.date = extractDay(msg) || extractDate(msg);
     if (!state.time) state.time = extractTime(msg);
+
     if (!state.type) {
       if (msg.includes("גבר")) state.type = "male";
       if (msg.includes("אישה")) state.type = "female";
     }
 
-    // שלבים
+    // שלב יום
     if (state.step === "date") {
-      if (!state.date) return res.end(twiml.message("איזה יום? 🙂").toString());
+      if (!state.date) {
+        return res.end(twiml.message("איזה יום? 🙂").toString());
+      }
+
       state.step = "time";
       return res.end(twiml.message("איזה שעה? ⏰").toString());
     }
 
+    // שלב שעה
     if (state.step === "time") {
-      if (!state.time) return res.end(twiml.message("לא הבנתי שעה 🤔").toString());
+      if (!state.time) {
+        return res.end(twiml.message("לא הבנתי שעה 🤔").toString());
+      }
+
       state.step = "type";
       return res.end(twiml.message("למי התור? גבר או אישה?").toString());
     }
 
+    // שלב סוג
     if (state.step === "type") {
-      if (!state.type) return res.end(twiml.message("גבר או אישה?").toString());
+      if (!state.type) {
+        return res.end(twiml.message("גבר או אישה?").toString());
+      }
 
-      const existing = await db
-        .collection("appointments")
+      const existing = await db.collection("appointments")
         .where("date","==",state.date)
         .where("time","==",state.time)
         .get();
@@ -156,31 +192,46 @@ app.post("/webhook", async (req, res) => {
     }
 
   } catch (err) {
-    console.error(err);
+    console.error("WEBHOOK ERROR:", err);
     return res.end(twiml.message("שגיאה 😔").toString());
   }
 });
 
-// ====================== תזכורות ======================
-
+// ================= REMINDERS =================
 app.get("/run-reminders", async (req, res) => {
   try {
+
     const now = new Date();
     const snapshot = await db.collection("appointments").get();
 
     for (const doc of snapshot.docs) {
       const data = doc.data();
 
+      // הגנה
+      if (!data.date || !data.time || !data.user) continue;
+
       const appt = new Date(`${data.date}T${data.time}`);
+      if (isNaN(appt)) continue;
+
       const diffMin = (appt - now) / 60000;
 
+      // יום לפני
       if (diffMin < 1440 && !data.reminder1) {
-        await sendWhatsApp(data.user, `📅 תזכורת: מחר יש לך תור ב-${data.time}`);
+        await sendWhatsApp(
+          data.user,
+          `📅 תזכורת: מחר יש לך תור בשעה ${data.time}`
+        );
+
         await doc.ref.update({ reminder1: true });
       }
 
+      // שעה לפני
       if (diffMin < 60 && !data.reminder2) {
-        await sendWhatsApp(data.user, `⏰ תזכורת: התור בעוד שעה`);
+        await sendWhatsApp(
+          data.user,
+          `⏰ תזכורת: התור שלך בעוד שעה`
+        );
+
         await doc.ref.update({ reminder2: true });
       }
     }
@@ -193,20 +244,21 @@ app.get("/run-reminders", async (req, res) => {
   }
 });
 
-// ====================== שרת ======================
-
+// ================= HEALTH =================
 app.get("/", (req, res) => {
   res.send("Server running");
 });
 
-app.listen(process.env.PORT || 8080, () => {
-  console.log("🚀 Server running");
-});
-
+// ================= ERROR HANDLING =================
 process.on("unhandledRejection", (err) => {
-  console.error("UNHANDLED REJECTION:", err);
+  console.error("UNHANDLED:", err);
 });
 
 process.on("uncaughtException", (err) => {
-  console.error("UNCAUGHT EXCEPTION:", err);
+  console.error("UNCAUGHT:", err);
+});
+
+// ================= START =================
+app.listen(process.env.PORT || 8080, () => {
+  console.log("🚀 Server running");
 });
