@@ -1,11 +1,6 @@
-require("dotenv").config();
 const express = require("express");
 const bodyParser = require("body-parser");
 const twilio = require("twilio");
-
-const OpenAI = require("openai");
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
 const admin = require("firebase-admin");
 
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
@@ -19,11 +14,18 @@ const db = admin.firestore();
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 
-// ====================== פונקציות עזר ======================
+// ====================== הגדרות ======================
 
-// תאריך עברי יפה
+const BUSINESS_HOURS = {
+  start: 16,
+  end: 20,
+  interval: 15,
+};
+
+// ====================== פונקציות ======================
+
 function formatDateHebrew(dateStr) {
-  const days = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
+  const days = ["ראשון","שני","שלישי","רביעי","חמישי","שישי","שבת"];
   const date = new Date(dateStr);
 
   const dayName = days[date.getDay()];
@@ -33,56 +35,11 @@ function formatDateHebrew(dateStr) {
   return `יום ${dayName} ה-${day}/${month}`;
 }
 
-// היום / מחר
-function extractDate(msg) {
-  const today = new Date();
-
-  if (msg.includes("מחר")) {
-    today.setDate(today.getDate() + 1);
-  }
-
-  return today.toISOString().split("T")[0];
-}
-
-// יום בשבוע
-function extractDayFromText(msg) {
-  const daysMap = {
-    "ראשון": 0,
-    "שני": 1,
-    "שלישי": 2,
-    "רביעי": 3,
-    "חמישי": 4,
-    "שישי": 5,
-    "שבת": 6,
-  };
-
-  for (let day in daysMap) {
-    if (msg.includes(day)) {
-      const today = new Date();
-      const currentDay = today.getDay();
-      let targetDay = daysMap[day];
-
-      let diff = targetDay - currentDay;
-      if (diff <= 0) diff += 7;
-
-      const result = new Date();
-      result.setDate(today.getDate() + diff);
-
-      return result.toISOString().split("T")[0];
-    }
-  }
-
-  return null;
-}
-
-// זיהוי שעה חכם
 function extractTime(msg) {
   const match = msg.match(/\d{1,2}(:\d{1,2})?/);
-
   if (!match) return null;
 
   let [h, m = "00"] = match[0].split(":");
-
   let minute = parseInt(m);
 
   if (minute < 15) m = "00";
@@ -93,147 +50,226 @@ function extractTime(msg) {
   return `${h.padStart(2, "0")}:${m}`;
 }
 
-// שעות זמינות (כל 15 דקות)
+function extractDate(msg) {
+  const today = new Date();
+
+  if (msg.includes("מחר")) {
+    today.setDate(today.getDate() + 1);
+  }
+
+  return today.toISOString().split("T")[0];
+}
+
+function extractDay(msg) {
+  const map = {
+    "ראשון":0,"שני":1,"שלישי":2,"רביעי":3,"חמישי":4,"שישי":5,"שבת":6
+  };
+
+  for (let d in map) {
+    if (msg.includes(d)) {
+      const today = new Date();
+      let diff = map[d] - today.getDay();
+      if (diff <= 0) diff += 7;
+
+      const result = new Date();
+      result.setDate(today.getDate() + diff);
+
+      return result.toISOString().split("T")[0];
+    }
+  }
+  return null;
+}
+
 function generateSlots() {
   const slots = [];
-  for (let h = 16; h <= 20; h++) {
-    for (let m of ["00", "15", "30", "45"]) {
-      slots.push(`${String(h).padStart(2, "0")}:${m}`);
+  for (let h = BUSINESS_HOURS.start; h <= BUSINESS_HOURS.end; h++) {
+    for (let m of ["00","15","30","45"]) {
+      slots.push(`${String(h).padStart(2,"0")}:${m}`);
     }
   }
   return slots;
 }
 
-// ====================== מצב שיחה ======================
+// ====================== מצב משתמש ======================
 
 const userState = {};
 
-// ====================== ראוט ======================
+// ====================== WEBHOOK ======================
 
 app.post("/webhook", async (req, res) => {
-  const incomingMsg = req.body.Body;
+  const msg = req.body.Body;
   const user = req.body.From;
 
   const twiml = new twilio.twiml.MessagingResponse();
 
   try {
     if (!userState[user]) {
-      userState[user] = {
-        step: "start",
-        date: null,
-        time: null,
-        type: null,
-      };
+      userState[user] = {};
     }
 
     let state = userState[user];
-    let reply = "";
 
-    const availableSlots = generateSlots();
+    // ====================== ביטול ======================
+    if (msg.includes("בטל")) {
+      const snapshot = await db
+        .collection("appointments")
+        .where("user", "==", user)
+        .get();
 
-    // ====================== זיהוי תאריך ======================
-    const dayFromText = extractDayFromText(incomingMsg);
+      if (snapshot.empty) {
+        twiml.message("אין לך תור לבטל 🤔");
+      } else {
+        snapshot.forEach(doc => doc.ref.delete());
+        twiml.message("התור בוטל בהצלחה ❌");
+      }
 
-    if (incomingMsg.includes("היום") || incomingMsg.includes("מחר")) {
-      state.date = extractDate(incomingMsg);
-    } else if (dayFromText) {
-      state.date = dayFromText;
+      return res.end(twiml.toString());
     }
 
-    // ====================== זיהוי שעה ======================
-    const detectedTime = extractTime(incomingMsg);
-    if (detectedTime) state.time = detectedTime;
+    // ====================== שינוי ======================
+    if (msg.includes("שנה")) {
+      state.step = "reschedule";
+      twiml.message("איזה שעה חדשה תרצה?");
+      return res.end(twiml.toString());
+    }
 
-    // ====================== זיהוי סוג ======================
+    // ====================== זיהוי ======================
+    if (!state.date) {
+      const d = extractDay(msg) || extractDate(msg);
+      if (d) state.date = d;
+    }
+
+    if (!state.time) {
+      const t = extractTime(msg);
+      if (t) state.time = t;
+    }
+
     if (!state.type) {
-      if (incomingMsg.includes("אישה")) state.type = "female";
-      if (incomingMsg.includes("גבר")) state.type = "male";
+      if (msg.includes("גבר")) state.type = "male";
+      if (msg.includes("אישה")) state.type = "female";
     }
 
-    // ====================== זרימת שיחה ======================
+    // ====================== שיחה חכמה ======================
 
-    if (state.step === "start") {
-      reply = "שלום! 👋 רוצה לקבוע תור?";
-      state.step = "ask_date";
+    // התחלה
+    if (!state.step) {
+      state.step = "date";
+      return res.end(twiml.message("לאיזה יום תרצה לקבוע תור? 📅").toString());
     }
 
-    else if (state.step === "ask_date") {
+    // תאריך
+    if (state.step === "date") {
       if (!state.date) {
-        reply = "לאיזה יום תרצה לקבוע תור?";
-      } else {
-        reply = "איזה שעה נוחה לך?";
-        state.step = "ask_time";
+        return res.end(twiml.message("לא הבנתי את היום 🤔").toString());
       }
+      state.step = "time";
+      return res.end(twiml.message("איזה שעה נוחה לך? ⏰").toString());
     }
 
-    else if (state.step === "ask_time") {
+    // שעה
+    if (state.step === "time") {
       if (!state.time) {
-        reply = `יש לי שעות פנויות:\n${availableSlots.slice(0, 6).join(", ")}`;
-      } else {
-        reply = "למי התור? גבר או אישה?";
-        state.step = "ask_type";
+        return res.end(twiml.message("איזה שעה? 🙂").toString());
       }
+      state.step = "type";
+      return res.end(twiml.message("למי התור? גבר או אישה?").toString());
     }
 
-    else if (state.step === "ask_type") {
+    // סוג
+    if (state.step === "type") {
       if (!state.type) {
-        reply = "זה תור לגבר או אישה?";
-      } else {
-
-        // ====================== בדיקה ב-Firebase ======================
-
-        const snapshot = await db
-          .collection("appointments")
-          .where("date", "==", state.date)
-          .where("time", "==", state.time)
-          .get();
-
-        if (!snapshot.empty) {
-          reply = `התור תפוס 😞\nבחר שעה אחרת`;
-        } else {
-          await db.collection("appointments").add({
-            user,
-            date: state.date,
-            time: state.time,
-            type: state.type,
-            createdAt: new Date(),
-          });
-
-          const prettyDate = formatDateHebrew(state.date);
-
-          reply = `🎉 נקבע תור ל-${prettyDate} בשעה ${state.time}`;
-
-          delete userState[user];
-        }
+        return res.end(twiml.message("גבר או אישה?").toString());
       }
-    }
 
-    else {
-      reply = "לא הבנתי 😅 תנסה שוב";
+      // בדיקה תפוס
+      const existing = await db
+        .collection("appointments")
+        .where("date", "==", state.date)
+        .where("time", "==", state.time)
+        .get();
+
+      if (!existing.empty) {
+        return res.end(twiml.message("התור תפוס 😞 נסה שעה אחרת").toString());
+      }
+
+      // שמירה
+      await db.collection("appointments").add({
+        user,
+        date: state.date,
+        time: state.time,
+        type: state.type,
+        reminder1: false,
+        reminder2: false,
+      });
+
+      const pretty = formatDateHebrew(state.date);
+
       delete userState[user];
-    }
 
-    twiml.message(reply);
-    res.writeHead(200, { "Content-Type": "text/xml" });
-    res.end(twiml.toString());
+      return res.end(
+        twiml.message(`🎉 נקבע תור ל-${pretty} בשעה ${state.time}`).toString()
+      );
+    }
 
   } catch (err) {
     console.error(err);
-    twiml.message("שגיאה זמנית 😔 נסה שוב");
-    res.writeHead(200, { "Content-Type": "text/xml" });
+    twiml.message("שגיאה זמנית 😔");
     res.end(twiml.toString());
   }
 });
 
-// ====================== בדיקת שרת ======================
+// ====================== תזכורות ======================
+
+setInterval(async () => {
+  const now = new Date();
+
+  const snapshot = await db.collection("appointments").get();
+
+  snapshot.forEach(async (doc) => {
+    const data = doc.data();
+
+    const appointmentTime = new Date(`${data.date}T${data.time}`);
+
+    const diff = appointmentTime - now;
+
+    const minutes = diff / 60000;
+
+    // יום לפני
+    if (minutes < 1440 && !data.reminder1) {
+      await sendWhatsApp(data.user, `📅 תזכורת: יש לך תור מחר ב-${data.time}`);
+      doc.ref.update({ reminder1: true });
+    }
+
+    // שעה לפני
+    if (minutes < 60 && !data.reminder2) {
+      await sendWhatsApp(data.user, `⏰ תזכורת: יש לך תור בעוד שעה`);
+      doc.ref.update({ reminder2: true });
+    }
+  });
+
+}, 60000);
+
+// ====================== שליחה ======================
+
+async function sendWhatsApp(to, body) {
+  const client = twilio(
+    process.env.TWILIO_ACCOUNT_SID,
+    process.env.TWILIO_AUTH_TOKEN
+  );
+
+  await client.messages.create({
+    from: process.env.TWILIO_WHATSAPP_NUMBER,
+    to,
+    body,
+  });
+}
+
+// ====================== שרת ======================
 
 app.get("/", (req, res) => {
-  res.send("Server is running");
+  res.send("Server running");
 });
 
-// ====================== הפעלה ======================
-
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log("🚀 Server running on port", PORT);
+app.listen(process.env.PORT || 8080, () => {
+  console.log("🚀 Server running");
 });
