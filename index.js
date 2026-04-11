@@ -16,10 +16,30 @@ const twilio = require("twilio");
 const admin = require("firebase-admin");
 
 // ================= FIREBASE =================
+const admin = require("firebase-admin");
 
+let serviceAccount;
+
+if (!process.env.FIREBASE_KEY) {
+  console.error("Missing FIREBASE_KEY");
+  process.exit(1);
+}
+
+try {
+  serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
+} catch (e) {
+  console.error("FIREBASE PARSE ERROR:", e.message);
+  process.exit(1);
+}
+
+// חשוב מאוד — לא לאתחל פעמיים
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
+}
 
 const db = admin.firestore();
-
 // ================= APP =================
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
