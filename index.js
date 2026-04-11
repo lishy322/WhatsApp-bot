@@ -110,38 +110,20 @@ app.post("/webhook", async (req, res) => {
   reply = "⚠️ המערכת זמנית לא שומרת תורים";
 } else {
   const snapshot = await db.collection("appointments")
-    .where("time", "==", data.time)
-    .get();
+  .where("time", "==", data.time)
+  .get();
 
-  if (!snapshot.empty) {
-    reply = `התור תפוס 😞`;
-  } else {
-    await db.collection("appointments").add({
-      user,
-      time: data.time,
-      createdAt: new Date()
-    });
+if (!snapshot.empty) {
+  reply = `התור תפוס 😞`;
+} else {
+  await db.collection("appointments").add({
+    user,
+    time: data.time,
+    createdAt: new Date()
+  });
 
-    reply = `🎉 התור נקבע ל-${data.time}`;
-  }
+  reply = `🎉 התור נקבע ל-${data.time}`;
 }
-          .where("time", "==", data.time)
-          .get();
-
-        if (!snapshot.empty) {
-          reply = `התור תפוס 😞\nבחר שעה אחרת:\n${availableSlots.join(", ")}`;
-        } else {
-
-          // ===== שמירה =====
-          await db.collection("appointments").add({
-            user,
-            time: data.time,
-            createdAt: new Date()
-          });
-
-          reply = `🎉 התור נקבע ל-${data.time}`;
-        }
-      }
     }
 
     // ===== ברירת מחדל =====
