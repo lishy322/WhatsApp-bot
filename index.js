@@ -1,3 +1,15 @@
+let serviceAccount;
+
+try {
+  serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
+} catch (e) {
+  console.error("FIREBASE PARSE ERROR:", e.message);
+  process.exit(1);
+}
+if (!process.env.FIREBASE_KEY) {
+  console.error("Missing FIREBASE_KEY");
+  process.exit(1);
+}
 const express = require("express");
 const bodyParser = require("body-parser");
 const twilio = require("twilio");
