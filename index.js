@@ -97,7 +97,9 @@ app.post("/whatsapp", async (req, res) => {
   console.log("AI DATA:", data);
 
   // ================= לוגיקה =================
-
+  if (data.time) {
+  data.intent = "book";
+  }
   if (data.intent === "greeting") {
     reply = "שלום! 👋 רוצה לקבוע תור?";
   }
