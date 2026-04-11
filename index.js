@@ -6,6 +6,11 @@ const OpenAI = require("openai");
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 
+// ===== בדיקת שרת =====
+app.get("/", (req, res) => {
+  res.send("Server is alive");
+});
+
 // ===== Firebase =====
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 
@@ -15,50 +20,25 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-// ===== Twilio =====
-const client = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
-
 // ===== OpenAI =====
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// ===== Twilio =====
+const MessagingResponse = twilio.twiml.MessagingResponse;
+
 // ===== שעות זמינות =====
 const availableSlots = ["16:00", "17:00", "18:00"];
 
-// ===== בדיקת שרת =====
-app.get("/", (req, res) => {
-  res.send("Server is alive");
-});
-
-// ===== פונקציה: שליחת תזכורת =====
-function scheduleReminder(phone, time) {
-  const now = new Date();
-  const [hour, minute] = time.split(":");
-
-  const appointment = new Date();
-  appointment.setHours(hour, minute, 0);
-
-  const diff = appointment - now - 30 * 60 * 1000; // 30 דקות לפני
-
-  if (diff > 0) {
-    setTimeout(() => {
-      client.messages.create({
-        from: process.env.TWILIO_WHATSAPP_NUMBER,
-        to: phone,
-        body: `⏰ תזכורת: יש לך תור בשעה ${time}`,
-      });
-    }, diff);
-  }
-}
-
 // ===== Webhook =====
-app.post("/whatsapp", async (req, res) => {
+app.post("/webhook", async (req, res) => {
   const incomingMsg = req.body.Body;
-  const from = req.body.From;
+  const user = req.body.From;
+
+  console.log("📩 הודעה:", incomingMsg);
+
+  let reply = "";
 
   try {
     // ===== AI =====
@@ -68,116 +48,95 @@ app.post("/whatsapp", async (req, res) => {
         {
           role: "system",
           content: `
-אתה בוט לקביעת תורים.
-
 תחזיר רק JSON:
 {
  "intent": "book | greeting | other",
  "time": "HH:MM או null"
 }
-
-דוגמאות:
-"אני רוצה תור ב16" -> 16:00
-"שלום" -> greeting
-          `,
+`
         },
         {
           role: "user",
-          content: incomingMsg,
-        },
-      ],
+          content: incomingMsg
+        }
+      ]
     });
 
     let data;
+
     try {
-      data = JSON.parse(ai.output_text);
-    } catch {
+      let txt = ai.output[0].content[0].text;
+
+      console.log("🤖 AI RAW:", txt);
+
+      txt = txt.replace(/```json/g, "").replace(/```/g, "").trim();
+
+      data = JSON.parse(txt);
+
+    } catch (e) {
+      console.log("JSON ERROR");
+
       data = { intent: "other", time: null };
     }
 
     // ===== ברכה =====
     if (data.intent === "greeting") {
-      return res.send(`
-        <Response>
-          <Message>שלום! 👋 רוצה לקבוע תור?</Message>
-        </Response>
-      `);
+      reply = "שלום! 👋 רוצה לקבוע תור?";
     }
 
-    // ===== אין שעה =====
-    if (!data.time) {
-      return res.send(`
-        <Response>
-          <Message>
-לא זיהיתי שעה 😅
-בחר:
-${availableSlots.join(", ")}
-          </Message>
-        </Response>
-      `);
+    // ===== בקשת תור =====
+    else if (data.intent === "book") {
+
+      if (!data.time) {
+        reply = `איזה שעה נוחה לך?\n${availableSlots.join(", ")}`;
+      }
+
+      else if (!availableSlots.includes(data.time)) {
+        reply = `השעה לא זמינה 😅\nבחר:\n${availableSlots.join(", ")}`;
+      }
+
+      else {
+        // ===== בדיקה אם תפוס =====
+        const snapshot = await db
+          .collection("appointments")
+          .where("time", "==", data.time)
+          .get();
+
+        if (!snapshot.empty) {
+          reply = `התור תפוס 😞\nבחר שעה אחרת:\n${availableSlots.join(", ")}`;
+        } else {
+
+          // ===== שמירה =====
+          await db.collection("appointments").add({
+            user,
+            time: data.time,
+            createdAt: new Date()
+          });
+
+          reply = `🎉 התור נקבע ל-${data.time}`;
+        }
+      }
     }
 
-    // ===== בדיקת זמינות =====
-    if (!availableSlots.includes(data.time)) {
-      return res.send(`
-        <Response>
-          <Message>
-השעה לא זמינה 😕
-אפשר:
-${availableSlots.join(", ")}
-          </Message>
-        </Response>
-      `);
+    // ===== ברירת מחדל =====
+    else {
+      reply = "אפשר לכתוב: אני רוצה תור ב16:00";
     }
 
-    // ===== בדיקה אם תפוס =====
-    const existing = await db
-      .collection("appointments")
-      .where("time", "==", data.time)
-      .get();
-
-    if (!existing.empty) {
-      return res.send(`
-        <Response>
-          <Message>
-התור כבר תפוס 😞
-נסה שעה אחרת:
-${availableSlots.join(", ")}
-          </Message>
-        </Response>
-      `);
-    }
-
-    // ===== שמירה =====
-    await db.collection("appointments").add({
-      phone: from,
-      time: data.time,
-      createdAt: new Date(),
-    });
-
-    // ===== תזכורת =====
-    scheduleReminder(from, data.time);
-
-    // ===== הצלחה =====
-    return res.send(`
-      <Response>
-        <Message>
-🎉 נקבע תור לשעה ${data.time}
-נשלח תזכורת לפני 🙂
-        </Message>
-      </Response>
-    `);
   } catch (err) {
-    console.error(err);
-
-    return res.send(`
-      <Response>
-        <Message>שגיאה זמנית 😔 נסה שוב</Message>
-      </Response>
-    `);
+    console.error("🔥 ERROR:", err);
+    reply = "שגיאה זמנית 😔 נסה שוב";
   }
+
+  const twiml = new MessagingResponse();
+  twiml.message(reply);
+
+  res.writeHead(200, { "Content-Type": "text/xml" });
+  res.end(twiml.toString());
 });
 
 // ===== הפעלת שרת =====
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log("Server running"));
+app.listen(PORT, () => {
+  console.log("🚀 Server running on port", PORT);
+});
