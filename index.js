@@ -42,6 +42,7 @@ const availableSlots = ["16:00", "17:00", "18:00"];
 // ===== Webhook =====
 app.post("/webhook", async (req, res) => {
   const incomingMsg = req.body.Body;
+  const today = new Date().toISOString().split("T")[0];
   const user = req.body.From;
 
   console.log("📩 Incoming:", incomingMsg);
@@ -78,6 +79,10 @@ app.post("/webhook", async (req, res) => {
       txt = txt.replace(/```json/g, "").replace(/```/g, "").trim();
 
       data = JSON.parse(txt);
+      // תיקון שעה כמו "18" → "18:00"
+      if (data.time && data.time.length === 2) {
+      data.time = data.time + ":00";
+      }
 
     } catch {
       data = { intent: "other", time: null };
@@ -106,9 +111,12 @@ app.post("/webhook", async (req, res) => {
         }
 
         else {
-          const snapshot = await db.collection("appointments")
-            .where("time", "==", data.time)
-            .get();
+          await db.collection("appointments").add({
+          user,
+          time: data.time,
+          date: today,
+          createdAt: new Date()
+          });
 
           if (!snapshot.empty) {
             reply = `התור תפוס 😞\nבחר שעה אחרת:\n${availableSlots.join(", ")}`;
