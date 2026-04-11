@@ -73,16 +73,33 @@ app.post("/webhook", async (req, res) => {
 
     let data;
 
-    try {
-      let txt = ai.output[0].content[0].text;
+try {
+  let txt = ai.output[0].content[0].text;
 
-      txt = txt.replace(/```json/g, "").replace(/```/g, "").trim();
+  // ניקוי טקסט
+  txt = txt.replace(/```json/g, "").replace(/```/g, "").trim();
 
-      data = JSON.parse(txt);
-      // תיקון שעה כמו "18" → "18:00"
-      if (data.time && data.time.length === 2) {
-      data.time = data.time + ":00";
-      }
+  data = JSON.parse(txt);
+
+  // תיקון שעה (18 → 18:00)
+  if (data.time && data.time.length === 2) {
+    data.time = data.time + ":00";
+  }
+
+} catch (err) {
+  console.log("AI PARSE ERROR:", err);
+
+  // 👇 fallback חכם במקום קריסה
+  const match = incomingMsg.match(/\d{1,2}/);
+  if (match) {
+    data = {
+      intent: "book",
+      time: match[0].padStart(2, "0") + ":00"
+    };
+  } else {
+    data = { intent: "other", time: null };
+  }
+}
 
     } catch {
       data = { intent: "other", time: null };
