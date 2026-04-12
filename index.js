@@ -24,16 +24,16 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 // ================= Twilio =================
 const sendWhatsApp = async (to, body) => {
   await axios.post(
-    `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_SID}/Messages.json`,
+    `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Messages.json`,
     new URLSearchParams({
-      From: "whatsapp:" + process.env.TWILIO_NUMBER,
+      From: "whatsapp:" + process.env.TWILIO_WHATSAPP_NUMBER,
       To: "whatsapp:" + to,
       Body: body
     }),
     {
       auth: {
-        username: process.env.TWILIO_SID,
-        password: process.env.TWILIO_AUTH
+        username: process.env.TWILIO_ACCOUNT_SID,
+        password: process.env.TWILIO_AUTH_TOKEN
       }
     }
   );
