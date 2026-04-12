@@ -8,6 +8,7 @@ const axios = require("axios");
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
+app.use(express.static("public"));
 
 // ================= Firebase =================
 if (!admin.apps.length) {
