@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+<meta charset="UTF-8">
+<title>יומן תורים</title>
+
+<style>
+body {
+  font-family: Arial;
+  background: #f5f6fa;
+  padding: 20px;
+}
+
+h1 {
+  text-align: center;
+}
+
+.container {
+  max-width: 600px;
+  margin: auto;
+}
+
+.controls {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+input, button {
+  padding: 10px;
+  font-size: 16px;
+}
+
+.slot {
+  background: white;
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.time {
+  font-weight: bold;
+  font-size: 18px;
+}
+
+.type {
+  padding: 5px 10px;
+  border-radius: 6px;
+  color: white;
+}
+
+/* צבעים לפי סוג */
+.male { background: #3498db; }
+.female { background: #e84393; }
+.child { background: #00b894; }
+
+.empty {
+  color: #999;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>📅 יומן תורים</h1>
+
+<div class="controls">
+  <input type="date" id="date">
+  <button onclick="load()">טען</button>
+</div>
+
+<div id="calendar"></div>
+
+</div>
+
+<script>
+
+const baseSlots = [
+  "08:00","08:15","08:30","08:45",
+  "09:00","09:15","09:30","09:45",
+  "10:00","10:15","10:30","10:45",
+  "16:00","16:15","16:30","16:45",
+  "17:00","17:15","17:30","17:45",
+  "18:00","18:15","18:30"
+];
+
+async function load() {
+  const date = document.getElementById("date").value;
+
+  const res = await fetch(`/appointments?date=${date}`);
+  const data = await res.json();
+
+  const calendar = document.getElementById("calendar");
+  calendar.innerHTML = "";
+
+  baseSlots.forEach(slot => {
+
+    const booking = data.find(a => a.time === slot);
+
+    const div = document.createElement("div");
+    div.className = "slot";
+
+    if (booking) {
+      div.innerHTML = `
+        <div class="time">${slot}</div>
+        <div class="type ${booking.type}">
+          ${translateType(booking.type)}
+        </div>
+      `;
+    } else {
+      div.innerHTML = `
+        <div class="time">${slot}</div>
+        <div class="empty">פנוי</div>
+      `;
+    }
+
+    calendar.appendChild(div);
+  });
+}
+
+function translateType(type) {
+  if (type === "male") return "גבר";
+  if (type === "female") return "אישה";
+  if (type === "child") return "ילד";
+  return "";
+}
+
+</script>
+
+</body>
+</html>
