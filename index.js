@@ -17,11 +17,21 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
-// ================= Config =================
-const availableSlots = [
+// ================= שירותים =================
+const services = {
+  male: 15,
+  female: 40,
+  child: 20
+};
+
+// ================= לוז בסיס =================
+const baseSlots = [
+  "08:00","08:15","08:30","08:45",
+  "09:00","09:15","09:30","09:45",
+  "10:00","10:15","10:30","10:45",
   "16:00","16:15","16:30","16:45",
   "17:00","17:15","17:30","17:45",
-  "18:00","18:15"
+  "18:00","18:15","18:30"
 ];
 
 // ================= Twilio =================
@@ -44,6 +54,20 @@ const sendWhatsApp = async (to, body) => {
 
 // ================= Helpers =================
 
+// המרת שעה לדקות
+const toMinutes = (t) => {
+  const [h, m] = t.split(":").map(Number);
+  return h * 60 + m;
+};
+
+// המרת דקות לשעה
+const toTime = (min) => {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `${h.toString().padStart(2,"0")}:${m.toString().padStart(2,"0")}`;
+};
+
+// זיהוי שעה
 const extractTime = (msg) => {
   const match = msg.match(/\d{1,2}(:\d{2})?/);
   if (!match) return null;
@@ -52,6 +76,7 @@ const extractTime = (msg) => {
   return t.padStart(5, "0");
 };
 
+// זיהוי יום
 const extractDate = (msg) => {
   const today = new Date();
 
@@ -59,40 +84,53 @@ const extractDate = (msg) => {
     today.setDate(today.getDate() + 1);
   }
 
-  const days = {
-    "ראשון":0,"שני":1,"שלישי":2,"רביעי":3,
-    "חמישי":4,"שישי":5,"שבת":6
-  };
-
-  for (let d in days) {
-    if (msg.includes(d)) {
-      let diff = days[d] - today.getDay();
-      if (diff <= 0) diff += 7;
-      today.setDate(today.getDate() + diff);
-    }
-  }
-
   return today.toISOString().split("T")[0];
 };
 
-const detectPreference = (msg) => {
-  msg = msg.toLowerCase();
-
-  if (msg.includes("בוקר")) return "morning";
-  if (msg.includes("ערב") || msg.includes("אחרי")) return "evening";
-
+// סוג לקוח
+const detectType = (msg) => {
+  if (msg.includes("אישה")) return "female";
+  if (msg.includes("ילד")) return "child";
+  if (msg.includes("גבר")) return "male";
   return null;
 };
 
-const filterSlots = (slots, pref) => {
-  if (!pref) return slots;
+// ================= לוגיקה אמיתית =================
 
-  return slots.filter(t => {
-    const h = parseInt(t.split(":")[0]);
-    if (pref === "morning") return h < 14;
-    if (pref === "evening") return h >= 16;
-    return true;
-  });
+// בדיקה אם זמן פנוי (כולל משך)
+const isSlotAvailable = (startTime, duration, booked) => {
+  const start = toMinutes(startTime);
+  const end = start + duration;
+
+  for (let b of booked) {
+    const bStart = toMinutes(b.time);
+    const bEnd = bStart + b.duration;
+
+    if (start < bEnd && end > bStart) {
+      return false;
+    }
+  }
+  return true;
+};
+
+// מציאת זמינות אמיתית
+const getAvailableSlots = async (date, duration) => {
+  const snapshot = await db
+    .collection("appointments")
+    .where("date", "==", date)
+    .get();
+
+  const booked = snapshot.docs.map(d => d.data());
+
+  const validSlots = [];
+
+  for (let slot of baseSlots) {
+    if (isSlotAvailable(slot, duration, booked)) {
+      validSlots.push(slot);
+    }
+  }
+
+  return validSlots;
 };
 
 // ================= State =================
@@ -105,17 +143,15 @@ app.post("/whatsapp", async (req, res) => {
     const user = req.body.From.replace("whatsapp:", "");
 
     if (!userState[user]) userState[user] = {};
-
     let state = userState[user];
 
-    // 🔥 תמיד לעדכן מידע אם מופיע
-    const newTime = extractTime(msg);
-    const newDate = extractDate(msg);
-    const newPref = detectPreference(msg);
+    const time = extractTime(msg);
+    const date = extractDate(msg);
+    const type = detectType(msg);
 
-    if (newDate) state.date = newDate;
-    if (newPref) state.pref = newPref;
-    if (newTime) state.time = newTime;
+    if (date) state.date = date;
+    if (time) state.time = time;
+    if (type) state.type = type;
 
     let reply = "";
 
@@ -125,46 +161,59 @@ app.post("/whatsapp", async (req, res) => {
       userState[user] = {};
     }
 
-    // התחלת תהליך
+    // התחלה תהליך
     else if (msg.includes("תור") || msg.includes("כן")) {
-      state.step = "time";
-
-      const slots = filterSlots(availableSlots, state.pref);
-
-      reply = `מעולה 👍 איזה שעה נוחה לך?\n${slots.slice(0,5).join(", ")}`;
+      state.step = "type";
+      reply = "למי התור?\n👉 גבר / אישה / ילד";
     }
 
-    // יש זמן → קובעים
+    // סוג
+    else if (state.step === "type" && state.type) {
+      state.step = "time";
+
+      const duration = services[state.type];
+      const slots = await getAvailableSlots(state.date, duration);
+
+      if (slots.length === 0) {
+        reply = "אין תורים פנויים 😔 רוצה יום אחר?";
+      } else {
+        reply = `השעות הפנויות:\n👉 ${slots.slice(0,5).join(", ")}`;
+      }
+    }
+
+    // קביעת תור
     else if (state.step === "time" && state.time) {
 
-      const slots = filterSlots(availableSlots, state.pref);
+      const duration = services[state.type];
+      const slots = await getAvailableSlots(state.date, duration);
 
       if (!slots.includes(state.time)) {
+        reply = `השעה לא פנויה 😅\n👉 ${slots.slice(0,3).join(", ")}`;
+      } else {
 
-        reply = `השעה ${state.time} לא פנויה 😅\n👉 ${slots.slice(0,3).join(", ")}`;
+        await db.collection("appointments").add({
+          user,
+          date: state.date,
+          time: state.time,
+          type: state.type,
+          duration
+        });
+
+        reply = `🎉 נקבע תור ל-${state.date} בשעה ${state.time}`;
+        delete userState[user];
       }
+    }
 
-      else {
+    // בקשת זמינות
+    else if (msg.includes("פנוי")) {
 
-        const snap = await db
-          .collection("appointments")
-          .where("date", "==", state.date)
-          .where("time", "==", state.time)
-          .get();
+      const duration = services[state.type || "male"];
+      const slots = await getAvailableSlots(state.date, duration);
 
-        if (!snap.empty) {
-          reply = "התור תפוס 😞 נסה שעה אחרת";
-        } else {
-
-          await db.collection("appointments").add({
-            user,
-            date: state.date,
-            time: state.time
-          });
-
-          reply = `🎉 נקבע תור ל-${state.date} בשעה ${state.time}`;
-          delete userState[user];
-        }
+      if (slots.length === 0) {
+        reply = "אין תורים פנויים 😔";
+      } else {
+        reply = `הזמינות:\n👉 ${slots.slice(0,6).join(", ")}`;
       }
     }
 
