@@ -1,120 +1,182 @@
+require("dotenv").config();
+
 const express = require("express");
 const bodyParser = require("body-parser");
-const { MessagingResponse } = require("twilio").twiml;
 const admin = require("firebase-admin");
+const axios = require("axios");
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
 
-// ================= FIREBASE =================
-let serviceAccount;
-
-try {
-  serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
-} catch (e) {
-  console.error("❌ FIREBASE ERROR:", e);
-  process.exit(1);
-}
-
+// ================= Firebase =================
 if (!admin.apps.length) {
   admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
+    credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_KEY))
   });
 }
 
 const db = admin.firestore();
 
-// ================= STATE =================
-const userState = {};
+// ================= OpenAI =================
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// ================= TEST =================
-app.get("/", (req, res) => {
-  res.send("Server is running 🚀");
-});
+// ================= Twilio =================
+const sendWhatsApp = async (to, body) => {
+  await axios.post(
+    `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_SID}/Messages.json`,
+    new URLSearchParams({
+      From: "whatsapp:" + process.env.TWILIO_NUMBER,
+      To: "whatsapp:" + to,
+      Body: body
+    }),
+    {
+      auth: {
+        username: process.env.TWILIO_SID,
+        password: process.env.TWILIO_AUTH
+      }
+    }
+  );
+};
 
-// ================= WHATSAPP =================
-app.post("/whatsapp", async (req, res) => {
-  console.log("📩 webhook triggered");
+// ================= Utils =================
+const availableSlots = [
+  "16:00","16:15","16:30","16:45",
+  "17:00","17:15","17:30","17:45",
+  "18:00"
+];
 
-  let reply = "משהו השתבש 😅";
+const formatDate = (dateStr) => {
+  const d = new Date(dateStr);
+  return `${d.getDate().toString().padStart(2,"0")}/${(d.getMonth()+1)
+    .toString().padStart(2,"0")}`;
+};
 
+// ================= AI =================
+async function detectIntent(message) {
   try {
-    const incomingMsg = req.body.Body?.trim();
-    const user = req.body.From;
+    const res = await axios.post(
+      "https://api.openai.com/v1/responses",
+      {
+        model: "gpt-5.3-mini",
+        input: `הודעה: "${message}"
+תחזיר JSON בלבד:
+{
+ "intent": "book | cancel | reschedule | greeting | other",
+ "time": "HH:MM או null",
+ "day": "YYYY-MM-DD או null"
+}`
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`
+        }
+      }
+    );
 
-    if (!userState[user]) {
-      userState[user] = {};
-    }
+    let txt = res.data.output[0].content[0].text;
+    txt = txt.replace(/```json/g, "").replace(/```/g, "").trim();
 
-    let state = userState[user];
+    return JSON.parse(txt);
+  } catch (e) {
+    return { intent: "other", time: null, day: null };
+  }
+}
 
-    // התחלה
-    if (incomingMsg === "היי") {
-      userState[user] = {};
-      reply = "שלום 👋 רוצה לקבוע תור?";
-    }
+// ================= Main Webhook =================
+app.post("/whatsapp", async (req, res) => {
+  try {
+    const incomingMsg = req.body.Body;
+    const user = req.body.From.replace("whatsapp:", "");
 
-    // כן
-    else if (incomingMsg.includes("כן")) {
-      state.step = "date";
-      reply = "לאיזה יום תרצה לקבוע תור?";
-    }
+    const ai = await detectIntent(incomingMsg);
 
-    // יום
-    else if (state.step === "date") {
-      state.date = incomingMsg;
-      state.step = "time";
-      reply = "איזה שעה נוחה לך?";
-    }
+    let { intent, time, day } = ai;
 
-    // שעה
-    else if (state.step === "time") {
-      const match = incomingMsg.match(/\d{1,2}/);
-
-      if (!match) {
-        reply = "לא הבנתי שעה 😅 נסה למשל 17";
-      } else {
-        state.time = match[0].padStart(2, "0") + ":00";
-        state.step = "type";
-        reply = "למי התור? גבר או אישה?";
+    // fallback חכם לזיהוי שעה
+    if (!time) {
+      const match = incomingMsg.match(/\d{1,2}(:\d{2})?/);
+      if (match) {
+        let t = match[0];
+        if (!t.includes(":")) t += ":00";
+        time = t.padStart(5, "0");
       }
     }
 
-    // סוג
-    else if (state.step === "type") {
-      const type = incomingMsg.includes("אישה") ? "female" : "male";
-
-      await db.collection("appointments").add({
-        user,
-        date: state.date,
-        time: state.time,
-        type,
-        createdAt: new Date(),
-      });
-
-      reply = `🎉 נקבע תור ל-${state.date} בשעה ${state.time}`;
-
-      delete userState[user];
+    if (!day) {
+      const today = new Date();
+      day = today.toISOString().split("T")[0];
     }
 
+    let reply = "";
+
+    // ========= Greeting =========
+    if (intent === "greeting") {
+      reply = "היי 👋 רוצה לקבוע תור?";
+    }
+
+    // ========= Booking =========
+    else if (intent === "book") {
+      if (!time) {
+        reply = `איזה שעה מתאימה לך?\n${availableSlots.slice(0,5).join(", ")}`;
+      } else if (!availableSlots.includes(time)) {
+        reply = `השעה לא זמינה 😅\nבחר מתוך:\n${availableSlots.join(", ")}`;
+      } else {
+        const snapshot = await db
+          .collection("appointments")
+          .where("date", "==", day)
+          .where("time", "==", time)
+          .get();
+
+        if (!snapshot.empty) {
+          reply = `התור תפוס 😞\nבחר שעה אחרת:\n${availableSlots.join(", ")}`;
+        } else {
+          await db.collection("appointments").add({
+            user,
+            date: day,
+            time,
+            createdAt: new Date(),
+            reminder1: false,
+            reminder2: false
+          });
+
+          reply = `🎉 נקבע תור ל-${formatDate(day)} בשעה ${time}`;
+        }
+      }
+    }
+
+    // ========= Cancel =========
+    else if (intent === "cancel") {
+      const snapshot = await db
+        .collection("appointments")
+        .where("user", "==", user)
+        .get();
+
+      if (snapshot.empty) {
+        reply = "אין לך תור לבטל 🤔";
+      } else {
+        snapshot.forEach(async (doc) => {
+          await doc.ref.delete();
+        });
+        reply = "התור בוטל 👍";
+      }
+    }
+
+    // ========= Default =========
     else {
-      reply = "אפשר לכתוב: אני רוצה לקבוע תור 🙂";
+      reply = "לא הבנתי 😅 אפשר לכתוב: אני רוצה תור ב17:00";
     }
 
+    await sendWhatsApp(user, reply);
+
+    res.send("OK");
   } catch (err) {
-    console.error("❌ ERROR:", err);
-    reply = "שגיאה זמנית 😔";
+    console.error(err);
+    res.send("error");
   }
-
-  // 🔥 חובה כדי שוואטסאפ יעבוד
-  const twiml = new MessagingResponse();
-  twiml.message(reply);
-
-  res.writeHead(200, { "Content-Type": "text/xml" });
-  res.end(twiml.toString());
 });
 
-// ================= REMINDERS =================
+// ================= Reminders =================
 app.get("/run-reminders", async (req, res) => {
   try {
     const now = new Date();
@@ -122,31 +184,28 @@ app.get("/run-reminders", async (req, res) => {
 
     for (const doc of snapshot.docs) {
       const data = doc.data();
-
       const appt = new Date(`${data.date}T${data.time}`);
       const diffMin = (appt - now) / 60000;
 
-      if (diffMin < 1440 && diffMin > 0 && !data.reminder1) {
-        console.log("📅 תזכורת יום לפני:", data.user);
+      if (diffMin < 1440 && !data.reminder1) {
+        await sendWhatsApp(data.user, `📅 תזכורת: מחר יש לך תור ב-${data.time}`);
         await doc.ref.update({ reminder1: true });
       }
 
-      if (diffMin < 60 && diffMin > 0 && !data.reminder2) {
-        console.log("⏰ תזכורת שעה לפני:", data.user);
+      if (diffMin < 60 && !data.reminder2) {
+        await sendWhatsApp(data.user, `⏰ תזכורת: התור בעוד שעה`);
         await doc.ref.update({ reminder2: true });
       }
     }
 
     res.send("OK");
   } catch (err) {
-    console.error("REMINDER ERROR:", err);
-    res.status(500).send("error");
+    console.error(err);
+    res.send("error");
   }
 });
 
-// ================= START =================
-const PORT = process.env.PORT || 8080;
-
-app.listen(PORT, () => {
-  console.log("🚀 Server running on port", PORT);
+// ================= Server =================
+app.listen(8080, () => {
+  console.log("🚀 Server running on port 8080");
 });
