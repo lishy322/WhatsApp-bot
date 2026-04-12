@@ -25,6 +25,8 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 
+const userState = {};
+
 // ================= OPENAI =================
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -45,45 +47,76 @@ app.post("/whatsapp", async (req, res) => {
     const incomingMsg = req.body.Body?.trim();
     const user = req.body.From;
 
-    console.log("Message:", incomingMsg);
-
-    // ================= AI =================
-    let data = { intent: "other", time: null, day: null };
-
-    try {
-      console.log("🧠 sending to AI");
-
-      const ai = await openai.responses.create({
-        model: "gpt-4.1-mini",
-        input: [
-          {
-            role: "system",
-            content: `
-תחזיר JSON בלבד:
-{
- "intent": "book | greeting | cancel | other",
- "time": "HH:MM או null",
- "day": "YYYY-MM-DD או null"
-}
-`,
-          },
-          {
-            role: "user",
-            content: incomingMsg,
-          },
-        ],
-      });
-
-      let txt = ai.output[0].content[0].text;
-      txt = txt.replace(/```json/g, "").replace(/```/g, "").trim();
-
-      data = JSON.parse(txt);
-
-      console.log("✅ AI returned:", data);
-    } catch (e) {
-      console.error("AI ERROR:", e);
+    if (!userState[user]) {
+      userState[user] = {};
     }
 
+    let state = userState[user];
+
+    // התחלה
+    if (incomingMsg === "היי") {
+      userState[user] = {};
+      reply = "שלום 👋 רוצה לקבוע תור?";
+    }
+
+    // כן
+    else if (incomingMsg.includes("כן")) {
+      state.step = "date";
+      reply = "לאיזה יום תרצה לקבוע תור?";
+    }
+
+    // יום
+    else if (state.step === "date") {
+      state.date = incomingMsg;
+      state.step = "time";
+      reply = "איזה שעה נוחה לך?";
+    }
+
+    // שעה
+    else if (state.step === "time") {
+      const match = incomingMsg.match(/\d{1,2}/);
+
+      if (!match) {
+        reply = "לא הבנתי שעה 😅 נסה למשל 17";
+      } else {
+        state.time = match[0].padStart(2, "0") + ":00";
+        state.step = "type";
+        reply = "למי התור? גבר או אישה?";
+      }
+    }
+
+    // סוג
+    else if (state.step === "type") {
+      const type = incomingMsg.includes("אישה") ? "female" : "male";
+
+      await db.collection("appointments").add({
+        user,
+        date: state.date,
+        time: state.time,
+        type,
+        createdAt: new Date(),
+      });
+
+      reply = `🎉 נקבע תור ל-${state.date} בשעה ${state.time}`;
+
+      delete userState[user];
+    }
+
+    else {
+      reply = "אפשר לכתוב: אני רוצה לקבוע תור 🙂";
+    }
+
+  } catch (err) {
+    console.error("❌ ERROR:", err);
+    reply = "שגיאה זמנית 😔";
+  }
+
+  const twiml = new MessagingResponse();
+  twiml.message(reply);
+
+  res.writeHead(200, { "Content-Type": "text/xml" });
+  res.end(twiml.toString());
+});
     // ================= לוגיקה =================
     const availableSlots = ["16:00", "17:00", "18:00"];
 
