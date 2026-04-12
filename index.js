@@ -18,12 +18,10 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 
 // ================= Config =================
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-
 const availableSlots = [
   "16:00","16:15","16:30","16:45",
   "17:00","17:15","17:30","17:45",
-  "18:00","18:15","18:30"
+  "18:00","18:15"
 ];
 
 // ================= Twilio =================
@@ -56,21 +54,39 @@ const extractTime = (msg) => {
 
 const extractDate = (msg) => {
   const today = new Date();
+
   if (msg.includes("מחר")) {
     today.setDate(today.getDate() + 1);
   }
+
+  const days = {
+    "ראשון":0,"שני":1,"שלישי":2,"רביעי":3,
+    "חמישי":4,"שישי":5,"שבת":6
+  };
+
+  for (let d in days) {
+    if (msg.includes(d)) {
+      let diff = days[d] - today.getDay();
+      if (diff <= 0) diff += 7;
+      today.setDate(today.getDate() + diff);
+    }
+  }
+
   return today.toISOString().split("T")[0];
 };
 
 const detectPreference = (msg) => {
   msg = msg.toLowerCase();
+
+  if (msg.includes("בוקר")) return "morning";
   if (msg.includes("ערב") || msg.includes("אחרי")) return "evening";
-  if (msg.includes("בוקר") || msg.includes("מוקדם")) return "morning";
+
   return null;
 };
 
 const filterSlots = (slots, pref) => {
   if (!pref) return slots;
+
   return slots.filter(t => {
     const h = parseInt(t.split(":")[0]);
     if (pref === "morning") return h < 14;
@@ -78,33 +94,6 @@ const filterSlots = (slots, pref) => {
     return true;
   });
 };
-
-// ================= AI =================
-async function detectIntent(message) {
-  try {
-    const res = await axios.post(
-      "https://api.openai.com/v1/responses",
-      {
-        model: "gpt-5.3-mini",
-        input: `הודעה: "${message}"
-תחזיר JSON בלבד:
-{
- "intent": "book | cancel | greeting | other"
-}`
-      },
-      {
-        headers: { Authorization: `Bearer ${OPENAI_API_KEY}` }
-      }
-    );
-
-    let txt = res.data.output[0].content[0].text;
-    txt = txt.replace(/```json/g, "").replace(/```/g, "").trim();
-    return JSON.parse(txt);
-
-  } catch {
-    return { intent: "other" };
-  }
-}
 
 // ================= State =================
 const userState = {};
@@ -115,53 +104,44 @@ app.post("/whatsapp", async (req, res) => {
     const msg = req.body.Body.toLowerCase();
     const user = req.body.From.replace("whatsapp:", "");
 
-    let state = userState[user] || {};
+    if (!userState[user]) userState[user] = {};
 
-    let ai = await detectIntent(msg);
-    let intent = ai.intent;
+    let state = userState[user];
 
-    // 🔥 FIX קריטי — fallback חכם
-    if (msg.includes("תור") || msg.includes("לקבוע")) {
-      intent = "book";
-    }
-    if (msg.includes("שלום") || msg.includes("היי")) {
-      intent = "greeting";
-    }
+    // 🔥 תמיד לעדכן מידע אם מופיע
+    const newTime = extractTime(msg);
+    const newDate = extractDate(msg);
+    const newPref = detectPreference(msg);
 
-    const time = extractTime(msg);
-    const date = extractDate(msg);
-    const pref = detectPreference(msg);
+    if (newDate) state.date = newDate;
+    if (newPref) state.pref = newPref;
+    if (newTime) state.time = newTime;
 
     let reply = "";
 
-    // ===== Greeting =====
-    if (intent === "greeting") {
+    // התחלה
+    if (msg.includes("היי") || msg.includes("שלום")) {
       reply = "היי 👋 רוצה לקבוע תור?";
       userState[user] = {};
     }
 
-    // ===== התחלת תהליך =====
-    else if (intent === "book" && !state.step) {
-      userState[user] = { step: "time", date, pref };
-      const slots = filterSlots(availableSlots, pref);
+    // התחלת תהליך
+    else if (msg.includes("תור") || msg.includes("כן")) {
+      state.step = "time";
+
+      const slots = filterSlots(availableSlots, state.pref);
 
       reply = `מעולה 👍 איזה שעה נוחה לך?\n${slots.slice(0,5).join(", ")}`;
     }
 
-    // ===== קבלת שעה =====
-    else if (state.step === "time" && time) {
+    // יש זמן → קובעים
+    else if (state.step === "time" && state.time) {
 
-      let slots = filterSlots(availableSlots, state.pref);
+      const slots = filterSlots(availableSlots, state.pref);
 
-      if (!slots.includes(time)) {
+      if (!slots.includes(state.time)) {
 
-        const h = parseInt(time);
-        const suggestions = slots.filter(t => {
-          const sh = parseInt(t);
-          return Math.abs(sh - h) <= 1;
-        });
-
-        reply = `השעה ${time} לא פנויה 😅\n👉 ${suggestions.slice(0,3).join(", ")}`;
+        reply = `השעה ${state.time} לא פנויה 😅\n👉 ${slots.slice(0,3).join(", ")}`;
       }
 
       else {
@@ -169,7 +149,7 @@ app.post("/whatsapp", async (req, res) => {
         const snap = await db
           .collection("appointments")
           .where("date", "==", state.date)
-          .where("time", "==", time)
+          .where("time", "==", state.time)
           .get();
 
         if (!snap.empty) {
@@ -179,29 +159,12 @@ app.post("/whatsapp", async (req, res) => {
           await db.collection("appointments").add({
             user,
             date: state.date,
-            time,
-            reminder1: false,
-            reminder2: false
+            time: state.time
           });
 
-          reply = `🎉 נקבע תור ל-${state.date} בשעה ${time}`;
+          reply = `🎉 נקבע תור ל-${state.date} בשעה ${state.time}`;
           delete userState[user];
         }
-      }
-    }
-
-    // ===== ביטול =====
-    else if (intent === "cancel") {
-      const snap = await db
-        .collection("appointments")
-        .where("user", "==", user)
-        .get();
-
-      if (snap.empty) {
-        reply = "אין לך תור 🤔";
-      } else {
-        snap.forEach(async d => await d.ref.delete());
-        reply = "התור בוטל 👍";
       }
     }
 
