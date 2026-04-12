@@ -56,43 +56,25 @@ const extractTime = (msg) => {
 
 const extractDate = (msg) => {
   const today = new Date();
-  msg = msg.toLowerCase();
-
   if (msg.includes("מחר")) {
     today.setDate(today.getDate() + 1);
-    return today.toISOString().split("T")[0];
   }
-
   return today.toISOString().split("T")[0];
 };
 
-const formatDate = (dateStr) => {
-  const d = new Date(dateStr);
-  return `${d.getDate().toString().padStart(2,"0")}/${(d.getMonth()+1)
-    .toString().padStart(2,"0")}`;
-};
-
-// 🧠 הבנת העדפה
 const detectPreference = (msg) => {
   msg = msg.toLowerCase();
-
+  if (msg.includes("ערב") || msg.includes("אחרי")) return "evening";
   if (msg.includes("בוקר") || msg.includes("מוקדם")) return "morning";
-  if (msg.includes("ערב") || msg.includes("אחרי העבודה")) return "evening";
-  if (msg.includes("לא משנה")) return "any";
-
   return null;
 };
 
-// 🎯 סינון לפי העדפה
-const filterSlotsByPreference = (slots, pref) => {
+const filterSlots = (slots, pref) => {
   if (!pref) return slots;
-
   return slots.filter(t => {
-    const hour = parseInt(t.split(":")[0]);
-
-    if (pref === "morning") return hour < 14;
-    if (pref === "evening") return hour >= 16;
-
+    const h = parseInt(t.split(":")[0]);
+    if (pref === "morning") return h < 14;
+    if (pref === "evening") return h >= 16;
     return true;
   });
 };
@@ -111,15 +93,14 @@ async function detectIntent(message) {
 }`
       },
       {
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`
-        }
+        headers: { Authorization: `Bearer ${OPENAI_API_KEY}` }
       }
     );
 
     let txt = res.data.output[0].content[0].text;
     txt = txt.replace(/```json/g, "").replace(/```/g, "").trim();
     return JSON.parse(txt);
+
   } catch {
     return { intent: "other" };
   }
@@ -131,17 +112,25 @@ const userState = {};
 // ================= Webhook =================
 app.post("/whatsapp", async (req, res) => {
   try {
-    const incomingMsg = req.body.Body;
+    const msg = req.body.Body.toLowerCase();
     const user = req.body.From.replace("whatsapp:", "");
-
-    const ai = await detectIntent(incomingMsg);
-    const intent = ai.intent;
 
     let state = userState[user] || {};
 
-    const time = extractTime(incomingMsg);
-    const date = extractDate(incomingMsg);
-    const preference = detectPreference(incomingMsg);
+    let ai = await detectIntent(msg);
+    let intent = ai.intent;
+
+    // 🔥 FIX קריטי — fallback חכם
+    if (msg.includes("תור") || msg.includes("לקבוע")) {
+      intent = "book";
+    }
+    if (msg.includes("שלום") || msg.includes("היי")) {
+      intent = "greeting";
+    }
+
+    const time = extractTime(msg);
+    const date = extractDate(msg);
+    const pref = detectPreference(msg);
 
     let reply = "";
 
@@ -151,55 +140,51 @@ app.post("/whatsapp", async (req, res) => {
       userState[user] = {};
     }
 
-    // ===== התחלה =====
-    else if (intent === "book" || incomingMsg.includes("כן")) {
-      userState[user] = { step: "ask_time", date, preference };
-      const slots = filterSlotsByPreference(availableSlots, preference);
+    // ===== התחלת תהליך =====
+    else if (intent === "book" && !state.step) {
+      userState[user] = { step: "time", date, pref };
+      const slots = filterSlots(availableSlots, pref);
 
       reply = `מעולה 👍 איזה שעה נוחה לך?\n${slots.slice(0,5).join(", ")}`;
     }
 
-    // ===== קיבל שעה =====
-    else if (state.step === "ask_time" && time) {
+    // ===== קבלת שעה =====
+    else if (state.step === "time" && time) {
 
-      let slots = filterSlotsByPreference(availableSlots, state.preference);
+      let slots = filterSlots(availableSlots, state.pref);
 
       if (!slots.includes(time)) {
 
-        const requestedHour = parseInt(time.split(":")[0]);
-
+        const h = parseInt(time);
         const suggestions = slots.filter(t => {
-          const hour = parseInt(t.split(":")[0]);
-          return Math.abs(hour - requestedHour) <= 1;
+          const sh = parseInt(t);
+          return Math.abs(sh - h) <= 1;
         });
 
-        const finalSuggestions = suggestions.length > 0
-          ? suggestions.slice(0,3)
-          : slots.slice(0,3);
+        reply = `השעה ${time} לא פנויה 😅\n👉 ${suggestions.slice(0,3).join(", ")}`;
+      }
 
-        reply = `השעה ${time} לא פנויה 😅\nאולי יתאים:\n👉 ${finalSuggestions.join(", ")}`;
-      } else {
+      else {
 
-        const snapshot = await db
+        const snap = await db
           .collection("appointments")
-          .where("date", "==", state.date || date)
+          .where("date", "==", state.date)
           .where("time", "==", time)
           .get();
 
-        if (!snapshot.empty) {
-          reply = `התור תפוס 😞\nבחר:\n${slots.slice(0,3).join(", ")}`;
+        if (!snap.empty) {
+          reply = "התור תפוס 😞 נסה שעה אחרת";
         } else {
 
           await db.collection("appointments").add({
             user,
-            date: state.date || date,
+            date: state.date,
             time,
-            createdAt: new Date(),
             reminder1: false,
             reminder2: false
           });
 
-          reply = `🎉 נקבע תור ל-${formatDate(state.date || date)} בשעה ${time}`;
+          reply = `🎉 נקבע תור ל-${state.date} בשעה ${time}`;
           delete userState[user];
         }
       }
@@ -207,15 +192,15 @@ app.post("/whatsapp", async (req, res) => {
 
     // ===== ביטול =====
     else if (intent === "cancel") {
-      const snapshot = await db
+      const snap = await db
         .collection("appointments")
         .where("user", "==", user)
         .get();
 
-      if (snapshot.empty) {
+      if (snap.empty) {
         reply = "אין לך תור 🤔";
       } else {
-        snapshot.forEach(async (doc) => await doc.ref.delete());
+        snap.forEach(async d => await d.ref.delete());
         reply = "התור בוטל 👍";
       }
     }
