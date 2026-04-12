@@ -3,29 +3,37 @@ require("dotenv").config();
 const express = require("express");
 const bodyParser = require("body-parser");
 const admin = require("firebase-admin");
-const axios = require("axios");
+const twilio = require("twilio");
+const OpenAI = require("openai");
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 app.use(express.static("public"));
 
-// ================= Firebase =================
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_KEY))
-  });
-}
+// ===== Firebase =====
+const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
 const db = admin.firestore();
 
-// ================= שירותים =================
-const services = {
-  male: 15,
-  female: 40,
-  child: 20
-};
+// ===== OpenAI =====
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
-// ================= לוז בסיס =================
+// ===== Twilio =====
+const client = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+
+const FROM = `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`;
+
+// ===== שעות =====
 const baseSlots = [
   "08:00","08:15","08:30","08:45",
   "09:00","09:15","09:30","09:45",
@@ -35,203 +43,177 @@ const baseSlots = [
   "18:00","18:15","18:30"
 ];
 
-// ================= Twilio =================
-const sendWhatsApp = async (to, body) => {
-  await axios.post(
-    `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Messages.json`,
-    new URLSearchParams({
-      From: "whatsapp:" + process.env.TWILIO_WHATSAPP_NUMBER,
-      To: "whatsapp:" + to,
-      Body: body
-    }),
-    {
-      auth: {
-        username: process.env.TWILIO_ACCOUNT_SID,
-        password: process.env.TWILIO_AUTH_TOKEN
-      }
-    }
-  );
-};
+// ===== זיכרון =====
+const sessions = {};
 
-// ================= Helpers =================
-
-// המרת שעה לדקות
-const toMinutes = (t) => {
-  const [h, m] = t.split(":").map(Number);
-  return h * 60 + m;
-};
-
-// המרת דקות לשעה
-const toTime = (min) => {
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  return `${h.toString().padStart(2,"0")}:${m.toString().padStart(2,"0")}`;
-};
-
-// זיהוי שעה
-const extractTime = (msg) => {
-  const match = msg.match(/\d{1,2}(:\d{2})?/);
+// ===== עזר =====
+function normalizeTime(text) {
+  const match = text.match(/(\d{1,2})(?::(\d{2}))?/);
   if (!match) return null;
-  let t = match[0];
-  if (!t.includes(":")) t += ":00";
-  return t.padStart(5, "0");
-};
 
-// זיהוי יום
-const extractDate = (msg) => {
-  const today = new Date();
+  let h = match[1].padStart(2, "0");
+  let m = match[2] || "00";
 
-  if (msg.includes("מחר")) {
-    today.setDate(today.getDate() + 1);
+  return `${h}:${m}`;
+}
+
+function getToday() {
+  const d = new Date();
+  return d.toISOString().split("T")[0];
+}
+
+// ===== בדיקת זמינות =====
+async function isAvailable(date, time) {
+  const snapshot = await db
+    .collection("appointments")
+    .where("date", "==", date)
+    .where("time", "==", time)
+    .get();
+
+  return snapshot.empty;
+}
+
+// ===== שמירת תור =====
+async function saveAppointment(user, date, time, type) {
+  await db.collection("appointments").add({
+    user,
+    date,
+    time,
+    type,
+    createdAt: new Date()
+  });
+}
+
+// ===== שליחת וואטסאפ =====
+async function sendWhatsApp(to, body) {
+  try {
+    await client.messages.create({
+      from: FROM,
+      to,
+      body
+    });
+  } catch (err) {
+    console.error("TWILIO ERROR:", err.message);
+  }
+}
+
+// ===== AI =====
+async function askAI(text) {
+  try {
+    const res = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: text }],
+    });
+
+    return res.choices[0].message.content;
+  } catch (err) {
+    return null;
+  }
+}
+
+// ===== Webhook =====
+app.post("/whatsapp", async (req, res) => {
+  const incoming = req.body.Body.toLowerCase();
+  const user = req.body.From;
+
+  if (!sessions[user]) {
+    sessions[user] = {};
   }
 
-  return today.toISOString().split("T")[0];
-};
+  let session = sessions[user];
 
-// סוג לקוח
-const detectType = (msg) => {
-  if (msg.includes("אישה")) return "female";
-  if (msg.includes("ילד")) return "child";
-  if (msg.includes("גבר")) return "male";
-  return null;
-};
+  // ===== זיהוי תור =====
+  if (incoming.includes("תור")) {
+    session.intent = "book";
+    return sendWhatsApp(user, "מעולה 👍 איזה שעה נוחה לך?");
+  }
 
-// ================= לוגיקה אמיתית =================
+  // ===== זמן =====
+  const time = normalizeTime(incoming);
+  if (time) {
+    session.time = time;
+    session.date = session.date || getToday();
 
-// בדיקה אם זמן פנוי (כולל משך)
-const isSlotAvailable = (startTime, duration, booked) => {
-  const start = toMinutes(startTime);
-  const end = start + duration;
+    return sendWhatsApp(user, "למי התור? גבר / אישה / ילד");
+  }
 
-  for (let b of booked) {
-    const bStart = toMinutes(b.time);
-    const bEnd = bStart + b.duration;
+  // ===== סוג =====
+  if (incoming.includes("גבר") || incoming.includes("אישה") || incoming.includes("ילד")) {
+    session.type = incoming.includes("גבר") ? "male"
+      : incoming.includes("אישה") ? "female"
+      : "child";
 
-    if (start < bEnd && end > bStart) {
-      return false;
+    const free = await isAvailable(session.date, session.time);
+
+    if (!free) {
+      return sendWhatsApp(user, "❌ השעה תפוסה, בחר שעה אחרת");
     }
-  }
-  return true;
-};
 
-// מציאת זמינות אמיתית
-const getAvailableSlots = async (date, duration) => {
+    await saveAppointment(user, session.date, session.time, session.type);
+
+    sendWhatsApp(user, `🎉 נקבע תור ל-${session.date} בשעה ${session.time}`);
+
+    sessions[user] = {};
+    return;
+  }
+
+  // ===== fallback AI =====
+  const ai = await askAI(incoming);
+
+  if (ai) {
+    return sendWhatsApp(user, ai);
+  }
+
+  return sendWhatsApp(user, "לא הבנתי 😅 רוצה לקבוע תור?");
+});
+
+// ===== API ליומן =====
+app.get("/appointments", async (req, res) => {
+  const date = req.query.date;
+
+  if (!date) return res.json([]);
+
   const snapshot = await db
     .collection("appointments")
     .where("date", "==", date)
     .get();
 
-  const booked = snapshot.docs.map(d => d.data());
+  const data = snapshot.docs.map(doc => doc.data());
 
-  const validSlots = [];
+  res.json(data);
+});
 
-  for (let slot of baseSlots) {
-    if (isSlotAvailable(slot, duration, booked)) {
-      validSlots.push(slot);
+// ===== תזכורות =====
+app.get("/run-reminders", async (req, res) => {
+  const now = new Date();
+
+  const snapshot = await db.collection("appointments").get();
+
+  for (const doc of snapshot.docs) {
+    const data = doc.data();
+
+    const appt = new Date(`${data.date}T${data.time}`);
+    const diff = (appt - now) / 60000;
+
+    if (diff < 1440 && !data.reminder1) {
+      await sendWhatsApp(data.user, `📅 תזכורת: מחר יש לך תור ב-${data.time}`);
+      await doc.ref.update({ reminder1: true });
+    }
+
+    if (diff < 60 && !data.reminder2) {
+      await sendWhatsApp(data.user, `⏰ תזכורת: התור בעוד שעה`);
+      await doc.ref.update({ reminder2: true });
     }
   }
 
-  return validSlots;
-};
-
-// ================= State =================
-const userState = {};
-
-// ================= Webhook =================
-app.post("/whatsapp", async (req, res) => {
-  try {
-    const msg = req.body.Body.toLowerCase();
-    const user = req.body.From.replace("whatsapp:", "");
-
-    if (!userState[user]) userState[user] = {};
-    let state = userState[user];
-
-    const time = extractTime(msg);
-    const date = extractDate(msg);
-    const type = detectType(msg);
-
-    if (date) state.date = date;
-    if (time) state.time = time;
-    if (type) state.type = type;
-
-    let reply = "";
-
-    // התחלה
-    if (msg.includes("היי") || msg.includes("שלום")) {
-      reply = "היי 👋 רוצה לקבוע תור?";
-      userState[user] = {};
-    }
-
-    // התחלה תהליך
-    else if (msg.includes("תור") || msg.includes("כן")) {
-      state.step = "type";
-      reply = "למי התור?\n👉 גבר / אישה / ילד";
-    }
-
-    // סוג
-    else if (state.step === "type" && state.type) {
-      state.step = "time";
-
-      const duration = services[state.type];
-      const slots = await getAvailableSlots(state.date, duration);
-
-      if (slots.length === 0) {
-        reply = "אין תורים פנויים 😔 רוצה יום אחר?";
-      } else {
-        reply = `השעות הפנויות:\n👉 ${slots.slice(0,5).join(", ")}`;
-      }
-    }
-
-    // קביעת תור
-    else if (state.step === "time" && state.time) {
-
-      const duration = services[state.type];
-      const slots = await getAvailableSlots(state.date, duration);
-
-      if (!slots.includes(state.time)) {
-        reply = `השעה לא פנויה 😅\n👉 ${slots.slice(0,3).join(", ")}`;
-      } else {
-
-        await db.collection("appointments").add({
-          user,
-          date: state.date,
-          time: state.time,
-          type: state.type,
-          duration
-        });
-
-        reply = `🎉 נקבע תור ל-${state.date} בשעה ${state.time}`;
-        delete userState[user];
-      }
-    }
-
-    // בקשת זמינות
-    else if (msg.includes("פנוי")) {
-
-      const duration = services[state.type || "male"];
-      const slots = await getAvailableSlots(state.date, duration);
-
-      if (slots.length === 0) {
-        reply = "אין תורים פנויים 😔";
-      } else {
-        reply = `הזמינות:\n👉 ${slots.slice(0,6).join(", ")}`;
-      }
-    }
-
-    else {
-      reply = "לא הבנתי 😅 רוצה לקבוע תור?";
-    }
-
-    await sendWhatsApp(user, reply);
-    res.send("OK");
-
-  } catch (err) {
-    console.error(err);
-    res.send("error");
-  }
+  res.send("OK");
 });
 
-// ================= Server =================
-app.listen(8080, () => {
-  console.log("🚀 Server running");
+// ===== root =====
+app.get("/", (req, res) => {
+  res.sendFile(__dirname + "/public/index.html");
 });
+
+// ===== run =====
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => console.log("Server running"));
