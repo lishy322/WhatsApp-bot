@@ -38,12 +38,10 @@ input, button {
   margin-bottom: 10px;
   display: flex;
   justify-content: space-between;
-  align-items: center;
 }
 
 .time {
   font-weight: bold;
-  font-size: 18px;
 }
 
 .type {
@@ -52,13 +50,20 @@ input, button {
   color: white;
 }
 
-/* צבעים לפי סוג */
 .male { background: #3498db; }
 .female { background: #e84393; }
 .child { background: #00b894; }
 
 .empty {
   color: #999;
+}
+
+.section {
+  margin-top: 20px;
+}
+
+h3 {
+  margin-bottom: 10px;
 }
 </style>
 </head>
@@ -92,11 +97,33 @@ const baseSlots = [
 async function load() {
   const date = document.getElementById("date").value;
 
-  const res = await fetch(`/appointments?date=${date}`);
-  const data = await res.json();
+  if (!date) {
+    alert("בחר תאריך קודם");
+    return;
+  }
+
+  const calendar = document.getElementById("calendar");
+  calendar.innerHTML = "טוען...";
+
+  try {
+    const res = await fetch(`/appointments?date=${date}`);
+    const data = await res.json();
+
+    render(data);
+
+  } catch (err) {
+    calendar.innerHTML = "❌ שגיאה בטעינה";
+  }
+}
+
+function render(data) {
 
   const calendar = document.getElementById("calendar");
   calendar.innerHTML = "";
+
+  if (!data.length) {
+    calendar.innerHTML = "❌ אין תורים ליום הזה";
+  }
 
   baseSlots.forEach(slot => {
 
