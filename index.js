@@ -46,7 +46,6 @@ const sendWhatsApp = async (to, body) => {
 
 // ================= Helpers =================
 
-// זיהוי שעה גם אם כתבו "17"
 const extractTime = (msg) => {
   const match = msg.match(/\d{1,2}(:\d{2})?/);
   if (!match) return null;
@@ -55,7 +54,6 @@ const extractTime = (msg) => {
   return t.padStart(5, "0");
 };
 
-// זיהוי יום
 const extractDate = (msg) => {
   const today = new Date();
   msg = msg.toLowerCase();
@@ -65,33 +63,38 @@ const extractDate = (msg) => {
     return today.toISOString().split("T")[0];
   }
 
-  const daysMap = {
-    "ראשון": 0,
-    "שני": 1,
-    "שלישי": 2,
-    "רביעי": 3,
-    "חמישי": 4,
-    "שישי": 5,
-    "שבת": 6
-  };
-
-  for (let day in daysMap) {
-    if (msg.includes(day)) {
-      const target = daysMap[day];
-      const diff = (target - today.getDay() + 7) % 7 || 7;
-      today.setDate(today.getDate() + diff);
-      return today.toISOString().split("T")[0];
-    }
-  }
-
   return today.toISOString().split("T")[0];
 };
 
-// תאריך יפה
 const formatDate = (dateStr) => {
   const d = new Date(dateStr);
   return `${d.getDate().toString().padStart(2,"0")}/${(d.getMonth()+1)
     .toString().padStart(2,"0")}`;
+};
+
+// 🧠 הבנת העדפה
+const detectPreference = (msg) => {
+  msg = msg.toLowerCase();
+
+  if (msg.includes("בוקר") || msg.includes("מוקדם")) return "morning";
+  if (msg.includes("ערב") || msg.includes("אחרי העבודה")) return "evening";
+  if (msg.includes("לא משנה")) return "any";
+
+  return null;
+};
+
+// 🎯 סינון לפי העדפה
+const filterSlotsByPreference = (slots, pref) => {
+  if (!pref) return slots;
+
+  return slots.filter(t => {
+    const hour = parseInt(t.split(":")[0]);
+
+    if (pref === "morning") return hour < 14;
+    if (pref === "evening") return hour >= 16;
+
+    return true;
+  });
 };
 
 // ================= AI =================
@@ -122,7 +125,7 @@ async function detectIntent(message) {
   }
 }
 
-// ================= State (זיכרון שיחה) =================
+// ================= State =================
 const userState = {};
 
 // ================= Webhook =================
@@ -132,32 +135,49 @@ app.post("/whatsapp", async (req, res) => {
     const user = req.body.From.replace("whatsapp:", "");
 
     const ai = await detectIntent(incomingMsg);
-    let intent = ai.intent;
+    const intent = ai.intent;
 
     let state = userState[user] || {};
 
     const time = extractTime(incomingMsg);
     const date = extractDate(incomingMsg);
+    const preference = detectPreference(incomingMsg);
 
     let reply = "";
 
     // ===== Greeting =====
     if (intent === "greeting") {
       reply = "היי 👋 רוצה לקבוע תור?";
-      userState[user] = { step: "ask_booking" };
+      userState[user] = {};
     }
 
     // ===== התחלה =====
-    else if (incomingMsg.includes("כן") || intent === "book") {
-      userState[user] = { step: "ask_time", date };
-      reply = `מעולה 👍 איזה שעה נוחה לך?\n${availableSlots.slice(0,5).join(", ")}`;
+    else if (intent === "book" || incomingMsg.includes("כן")) {
+      userState[user] = { step: "ask_time", date, preference };
+      const slots = filterSlotsByPreference(availableSlots, preference);
+
+      reply = `מעולה 👍 איזה שעה נוחה לך?\n${slots.slice(0,5).join(", ")}`;
     }
 
     // ===== קיבל שעה =====
     else if (state.step === "ask_time" && time) {
 
-      if (!availableSlots.includes(time)) {
-        reply = `השעה ${time} לא זמינה 😅\nאפשר:\n${availableSlots.slice(0,6).join(", ")}`;
+      let slots = filterSlotsByPreference(availableSlots, state.preference);
+
+      if (!slots.includes(time)) {
+
+        const requestedHour = parseInt(time.split(":")[0]);
+
+        const suggestions = slots.filter(t => {
+          const hour = parseInt(t.split(":")[0]);
+          return Math.abs(hour - requestedHour) <= 1;
+        });
+
+        const finalSuggestions = suggestions.length > 0
+          ? suggestions.slice(0,3)
+          : slots.slice(0,3);
+
+        reply = `השעה ${time} לא פנויה 😅\nאולי יתאים:\n👉 ${finalSuggestions.join(", ")}`;
       } else {
 
         const snapshot = await db
@@ -167,7 +187,7 @@ app.post("/whatsapp", async (req, res) => {
           .get();
 
         if (!snapshot.empty) {
-          reply = `התור תפוס 😞\nבחר:\n${availableSlots.slice(0,6).join(", ")}`;
+          reply = `התור תפוס 😞\nבחר:\n${slots.slice(0,3).join(", ")}`;
         } else {
 
           await db.collection("appointments").add({
@@ -200,7 +220,6 @@ app.post("/whatsapp", async (req, res) => {
       }
     }
 
-    // ===== fallback =====
     else {
       reply = "לא הבנתי 😅 רוצה לקבוע תור?";
     }
@@ -214,36 +233,7 @@ app.post("/whatsapp", async (req, res) => {
   }
 });
 
-// ================= Reminders =================
-app.get("/run-reminders", async (req, res) => {
-  const now = new Date();
-  const snapshot = await db.collection("appointments").get();
-
-  for (const doc of snapshot.docs) {
-    const data = doc.data();
-    const appt = new Date(`${data.date}T${data.time}`);
-    const diffMin = (appt - now) / 60000;
-
-    if (diffMin < 1440 && !data.reminder1) {
-      await sendWhatsApp(data.user, `📅 תזכורת: מחר יש לך תור ב-${data.time}`);
-      await doc.ref.update({ reminder1: true });
-    }
-
-    if (diffMin < 60 && !data.reminder2) {
-      await sendWhatsApp(data.user, `⏰ התור בעוד שעה`);
-      await doc.ref.update({ reminder2: true });
-    }
-  }
-
-  res.send("OK");
-});
-
-// ================= Health =================
-app.get("/", (req, res) => {
-  res.send("Server is alive ✅");
-});
-
 // ================= Server =================
 app.listen(8080, () => {
-  console.log("🚀 Server running on port 8080");
+  console.log("🚀 Server running");
 });
