@@ -1,223 +1,300 @@
 require("dotenv").config();
-
 const express = require("express");
 const bodyParser = require("body-parser");
 const admin = require("firebase-admin");
-const axios = require("axios");
+const twilio = require("twilio");
+const OpenAI = require("openai");
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
-app.use(express.static("public"));
 
-// ===== Firebase =====
+/* ================= FIREBASE ================= */
+const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
+
 if (!admin.apps.length) {
   admin.initializeApp({
-    credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_KEY))
+    credential: admin.credential.cert(serviceAccount),
   });
 }
+
 const db = admin.firestore();
 
-// ===== עובדים =====
-const workers = ["david", "moshe"];
+/* ================= TWILIO ================= */
+const client = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
 
-// ===== שירותים =====
+/* ================= OPENAI ================= */
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+/* ================= הגדרות ================= */
+
 const services = {
-  male: 15,
-  female: 40,
-  child: 20
+  "גבר": 15,
+  "ילד": 20,
+  "אישה": 40,
 };
 
-// ===== Twilio =====
-const sendWhatsApp = async (to, body) => {
-  await axios.post(
-    `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Messages.json`,
-    new URLSearchParams({
-      From: "whatsapp:" + process.env.TWILIO_WHATSAPP_NUMBER,
-      To: "whatsapp:" + to,
-      Body: body
-    }),
-    {
-      auth: {
-        username: process.env.TWILIO_ACCOUNT_SID,
-        password: process.env.TWILIO_AUTH_TOKEN
-      }
-    }
-  );
-};
+const workers = ["דוד", "משה"];
 
-// ===== helpers =====
-const extractTime = (msg) => {
-  const match = msg.match(/\d{1,2}(:\d{2})?/);
-  if (!match) return null;
-  let t = match[0];
-  if (!t.includes(":")) t += ":00";
-  return t.padStart(5, "0");
-};
+/* ================= זיכרון ================= */
 
-const extractDate = (msg) => {
-  const today = new Date();
-
-  if (msg.includes("מחר")) {
-    today.setDate(today.getDate() + 1);
-  }
-
-  return today.toISOString().split("T")[0];
-};
-
-const detectType = (msg) => {
-  if (msg.includes("אישה")) return "female";
-  if (msg.includes("ילד")) return "child";
-  if (msg.includes("גבר")) return "male";
-  return null;
-};
-
-// ===== state =====
 const sessions = {};
 
-// ===== WhatsApp =====
+/* ================= תאריכים ================= */
+
+function getNextDayOfWeek(dayName) {
+  const daysMap = {
+    "ראשון": 0,
+    "שני": 1,
+    "שלישי": 2,
+    "רביעי": 3,
+    "חמישי": 4,
+    "שישי": 5,
+    "שבת": 6
+  };
+
+  const targetDay = daysMap[dayName];
+  if (targetDay === undefined) return null;
+
+  const now = new Date();
+  const today = now.getDay();
+
+  let diff = targetDay - today;
+  if (diff <= 0) diff += 7;
+
+  const result = new Date();
+  result.setDate(now.getDate() + diff);
+
+  return result.toISOString().split("T")[0];
+}
+
+/* ================= שעות פנויות ================= */
+
+function generateSlots() {
+  const slots = [];
+  for (let h = 8; h <= 18; h++) {
+    for (let m = 0; m < 60; m += 15) {
+      if (h === 18 && m > 0) continue;
+      slots.push(
+        String(h).padStart(2, "0") +
+        ":" +
+        String(m).padStart(2, "0")
+      );
+    }
+  }
+  return slots;
+}
+
+/* ================= בדיקת תפוס ================= */
+
+async function isSlotTaken(date, time, duration, worker) {
+  const snapshot = await db.collection("appointments")
+    .where("date", "==", date)
+    .where("worker", "==", worker)
+    .get();
+
+  const [hour, minute] = time.split(":").map(Number);
+
+  for (const doc of snapshot.docs) {
+    const appt = doc.data();
+    const dur = services[appt.type] || 15;
+
+    const [h, m] = appt.time.split(":").map(Number);
+
+    const start = h * 60 + m;
+    const end = start + dur;
+
+    const newStart = hour * 60 + minute;
+    const newEnd = newStart + duration;
+
+    if (newStart < end && newEnd > start) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/* ================= שליחת וואטסאפ ================= */
+
+async function sendWhatsApp(to, message) {
+  await client.messages.create({
+    from: process.env.TWILIO_WHATSAPP_NUMBER,
+    to: to,
+    body: message,
+  });
+}
+
+/* ================= webhook ================= */
+
 app.post("/whatsapp", async (req, res) => {
+  const msg = req.body.Body.trim();
+  const from = req.body.From;
+
+  if (!sessions[from]) {
+    sessions[from] = {};
+  }
+
+  const session = sessions[from];
+
   try {
-    const msg = req.body.Body.toLowerCase();
-    const user = req.body.From.replace("whatsapp:", "");
 
-    if (!sessions[user]) sessions[user] = {};
-    let s = sessions[user];
-
-    const time = extractTime(msg);
-    const date = extractDate(msg);
-    const type = detectType(msg);
-
-    if (time) s.time = time;
-    if (date) s.date = date;
-    if (type) s.type = type;
-
-    let reply = "";
-
-    // התחלה
-    if (msg.includes("היי") || msg.includes("שלום")) {
-      sessions[user] = {};
-      reply = "היי 👋 רוצה לקבוע תור?";
+    /* התחלה */
+    if (!session.step) {
+      session.step = "start";
+      await sendWhatsApp(from, "היי 👋 רוצה לקבוע תור?");
+      return res.send("ok");
     }
 
-    // התחלת תהליך
-    else if (msg.includes("תור") || msg.includes("כן")) {
-      s.step = "worker";
-      reply = "לאיזה ספר?\n👉 דוד / משה";
+    /* התחלה → כן */
+    if (session.step === "start" && msg.includes("כן")) {
+      session.step = "worker";
+      await sendWhatsApp(from, "לאיזה ספר?\n👉 דוד / משה");
+      return res.send("ok");
     }
 
-    // עובד
-    else if (s.step === "worker" && (msg.includes("דוד") || msg.includes("משה"))) {
-      s.worker = msg.includes("דוד") ? "david" : "moshe";
-      s.step = "type";
-      reply = "למי התור?\n👉 גבר / אישה / ילד";
+    /* בחירת ספר */
+    if (session.step === "worker") {
+      if (workers.includes(msg)) {
+        session.worker = msg;
+        session.step = "type";
+        await sendWhatsApp(from, "למי התור?\n👉 גבר / אישה / ילד");
+      }
+      return res.send("ok");
     }
 
-    // סוג
-    else if (s.step === "type" && s.type) {
-      s.step = "date";
-      reply = "לאיזה יום? 📅\nאפשר לכתוב: מחר / יום שלישי / תאריך";
+    /* סוג */
+    if (session.step === "type") {
+      if (services[msg]) {
+        session.type = msg;
+        session.step = "date";
+        await sendWhatsApp(from, "לאיזה יום? 📅\nאפשר: מחר / יום שלישי");
+      }
+      return res.send("ok");
     }
 
-    // תאריך
-    else if (s.step === "date" && s.date) {
-      s.step = "time";
-      reply = "איזה שעה?";
+    /* תאריך */
+    if (session.step === "date") {
+
+      let selectedDate = null;
+
+      if (msg.includes("מחר")) {
+        const d = new Date();
+        d.setDate(d.getDate() + 1);
+        selectedDate = d.toISOString().split("T")[0];
+      }
+
+      else if (msg.includes("יום")) {
+        const match = msg.match(/יום\s(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/);
+        if (match) {
+          selectedDate = getNextDayOfWeek(match[1]);
+        }
+      }
+
+      if (!selectedDate) {
+        await sendWhatsApp(from, "לא הבנתי את התאריך 😅");
+        return res.send("ok");
+      }
+
+      session.date = selectedDate;
+      session.step = "time";
+
+      const slots = generateSlots();
+      await sendWhatsApp(from, `איזה שעה ל-${selectedDate}? \n${slots.slice(32, 40).join(", ")}`);
+
+      return res.send("ok");
     }
 
-    // שעה וסגירה
-    else if (s.step === "time" && s.time) {
+    /* שעה */
+    if (session.step === "time") {
+
+      let time = msg.length <= 2 ? msg + ":00" : msg;
+
+      const duration = services[session.type];
+
+      const taken = await isSlotTaken(session.date, time, duration, session.worker);
+
+      if (taken) {
+        await sendWhatsApp(from, "השעה תפוסה 😅 נסה אחרת");
+        return res.send("ok");
+      }
 
       await db.collection("appointments").add({
-        user,
-        date: s.date,
-        time: s.time,
-        type: s.type,
-        worker: s.worker
+        user: from,
+        date: session.date,
+        time: time,
+        type: session.type,
+        worker: session.worker,
+        createdAt: new Date()
       });
 
-      reply = `🎉 נקבע תור ל-${s.date} בשעה ${s.time}`;
-      delete sessions[user];
-    }
+      await sendWhatsApp(from, `🎉 נקבע תור ל-${session.date} בשעה ${time}`);
 
-    else {
-      reply = "לא הבנתי 😅 רוצה לקבוע תור?";
+      sessions[from] = {};
+      return res.send("ok");
     }
-
-    await sendWhatsApp(user, reply);
-    res.send("OK");
 
   } catch (err) {
     console.error(err);
-    res.send("error");
   }
+
+  res.send("ok");
 });
 
-// ===== API =====
+/* ================= UI API ================= */
 
-// כל התורים
 app.get("/appointments/week", async (req, res) => {
-  try {
-    const snapshot = await db.collection("appointments").get();
+  const snapshot = await db.collection("appointments").get();
 
-    const data = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    }));
+  const appointments = snapshot.docs.map(doc => doc.data());
+  const result = [];
 
-    res.json(data);
+  for (const appt of appointments) {
+    const duration = services[appt.type] || 15;
 
-  } catch (err) {
-    console.error(err);
-    res.status(500).send("error");
+    const [hour, minute] = appt.time.split(":").map(Number);
+    const blocks = Math.ceil(duration / 15);
+
+    for (let i = 0; i < blocks; i++) {
+      let m = minute + i * 15;
+      let h = hour;
+
+      if (m >= 60) {
+        h += Math.floor(m / 60);
+        m = m % 60;
+      }
+
+      const timeStr =
+        String(h).padStart(2, "0") +
+        ":" +
+        String(m).padStart(2, "0");
+
+      result.push({
+        date: appt.date,
+        time: timeStr,
+        type: appt.type,
+        worker: appt.worker
+      });
+    }
   }
+
+  res.json(result);
 });
 
-// יצירה מה UI
-app.post("/appointments", async (req, res) => {
-  await db.collection("appointments").add(req.body);
-  res.send("OK");
+/* ================= ROOT ================= */
+
+app.get("/", (req, res) => {
+  res.send("Server is running 🚀");
 });
 
-// ביטול
-app.delete("/appointments", async (req, res) => {
-  const { date, time, worker } = req.body;
+/* ================= SERVER ================= */
 
-  const snapshot = await db.collection("appointments")
-    .where("date","==",date)
-    .where("time","==",time)
-    .where("worker","==",worker)
-    .get();
-
-  snapshot.forEach(doc => doc.ref.delete());
-
-  res.send("deleted");
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
+  console.log("Server running on port " + PORT);
 });
-
-// שינוי
-app.put("/appointments", async (req, res) => {
-  const { oldDate, oldTime, newDate, newTime, worker } = req.body;
-
-  const snapshot = await db.collection("appointments")
-    .where("date","==",oldDate)
-    .where("time","==",oldTime)
-    .where("worker","==",worker)
-    .get();
-
-  snapshot.forEach(doc => {
-    doc.ref.update({
-      date:newDate,
-      time:newTime
-    });
-  });
-
-  res.send("updated");
-});
-
-// ===== root =====
-app.get("/", (req,res)=>{
-  res.sendFile(__dirname + "/public/index.html");
-});
-
-// ===== server =====
-app.listen(8080, () => console.log("🚀 Server running"));
