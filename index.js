@@ -4,10 +4,12 @@ const bodyParser = require("body-parser");
 const admin = require("firebase-admin");
 const twilio = require("twilio");
 const OpenAI = require("openai");
+const path = require("path");
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
+app.use(express.static(path.join(__dirname, "public")));
 
 /* ================= FIREBASE ================= */
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
@@ -41,8 +43,6 @@ const services = {
 
 const workers = ["דוד", "משה"];
 
-/* ================= זיכרון ================= */
-
 const sessions = {};
 
 /* ================= תאריכים ================= */
@@ -73,7 +73,7 @@ function getNextDayOfWeek(dayName) {
   return result.toISOString().split("T")[0];
 }
 
-/* ================= שעות פנויות ================= */
+/* ================= slots ================= */
 
 function generateSlots() {
   const slots = [];
@@ -90,7 +90,7 @@ function generateSlots() {
   return slots;
 }
 
-/* ================= בדיקת תפוס ================= */
+/* ================= בדיקת חפיפה ================= */
 
 async function isSlotTaken(date, time, duration, worker) {
   const snapshot = await db.collection("appointments")
@@ -120,7 +120,7 @@ async function isSlotTaken(date, time, duration, worker) {
   return false;
 }
 
-/* ================= שליחת וואטסאפ ================= */
+/* ================= whatsapp ================= */
 
 async function sendWhatsApp(to, message) {
   await client.messages.create({
@@ -130,113 +130,91 @@ async function sendWhatsApp(to, message) {
   });
 }
 
-/* ================= webhook ================= */
+/* ================= BOT ================= */
 
 app.post("/whatsapp", async (req, res) => {
   const msg = req.body.Body.trim();
   const from = req.body.From;
 
-  if (!sessions[from]) {
-    sessions[from] = {};
-  }
-
+  if (!sessions[from]) sessions[from] = {};
   const session = sessions[from];
 
   try {
 
-    /* התחלה */
     if (!session.step) {
       session.step = "start";
       await sendWhatsApp(from, "היי 👋 רוצה לקבוע תור?");
       return res.send("ok");
     }
 
-    /* התחלה → כן */
     if (session.step === "start" && msg.includes("כן")) {
       session.step = "worker";
-      await sendWhatsApp(from, "לאיזה ספר?\n👉 דוד / משה");
-      return res.send("ok");
+      return sendWhatsApp(from, "לאיזה ספר?\n👉 דוד / משה");
     }
 
-    /* בחירת ספר */
     if (session.step === "worker") {
       if (workers.includes(msg)) {
         session.worker = msg;
         session.step = "type";
-        await sendWhatsApp(from, "למי התור?\n👉 גבר / אישה / ילד");
+        return sendWhatsApp(from, "למי התור?\n👉 גבר / אישה / ילד");
       }
-      return res.send("ok");
     }
 
-    /* סוג */
     if (session.step === "type") {
       if (services[msg]) {
         session.type = msg;
         session.step = "date";
-        await sendWhatsApp(from, "לאיזה יום? 📅\nאפשר: מחר / יום שלישי");
+        return sendWhatsApp(from, "לאיזה יום? 📅\nמחר / יום שלישי");
       }
-      return res.send("ok");
     }
 
-    /* תאריך */
     if (session.step === "date") {
-
       let selectedDate = null;
 
       if (msg.includes("מחר")) {
         const d = new Date();
         d.setDate(d.getDate() + 1);
         selectedDate = d.toISOString().split("T")[0];
-      }
-
-      else if (msg.includes("יום")) {
+      } else if (msg.includes("יום")) {
         const match = msg.match(/יום\s(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/);
-        if (match) {
-          selectedDate = getNextDayOfWeek(match[1]);
-        }
+        if (match) selectedDate = getNextDayOfWeek(match[1]);
       }
 
       if (!selectedDate) {
-        await sendWhatsApp(from, "לא הבנתי את התאריך 😅");
-        return res.send("ok");
+        return sendWhatsApp(from, "לא הבנתי תאריך 😅");
       }
 
       session.date = selectedDate;
       session.step = "time";
 
-      const slots = generateSlots();
-      await sendWhatsApp(from, `איזה שעה ל-${selectedDate}? \n${slots.slice(32, 40).join(", ")}`);
-
-      return res.send("ok");
+      return sendWhatsApp(from, `איזה שעה ל-${selectedDate}?`);
     }
 
-    /* שעה */
     if (session.step === "time") {
-
       let time = msg.length <= 2 ? msg + ":00" : msg;
 
-      const duration = services[session.type];
-
-      const taken = await isSlotTaken(session.date, time, duration, session.worker);
+      const taken = await isSlotTaken(
+        session.date,
+        time,
+        services[session.type],
+        session.worker
+      );
 
       if (taken) {
-        await sendWhatsApp(from, "השעה תפוסה 😅 נסה אחרת");
-        return res.send("ok");
+        return sendWhatsApp(from, "השעה תפוסה 😅");
       }
 
       await db.collection("appointments").add({
         user: from,
         date: session.date,
-        time: time,
+        time,
         type: session.type,
-        worker: session.worker,
-        createdAt: new Date()
+        worker: session.worker
       });
 
-      await sendWhatsApp(from, `🎉 נקבע תור ל-${session.date} בשעה ${time}`);
+      await sendWhatsApp(from, `🎉 נקבע תור ל-${session.date} ${time}`);
 
       sessions[from] = {};
-      return res.send("ok");
     }
 
   } catch (err) {
@@ -250,51 +228,14 @@ app.post("/whatsapp", async (req, res) => {
 
 app.get("/appointments/week", async (req, res) => {
   const snapshot = await db.collection("appointments").get();
-
-  const appointments = snapshot.docs.map(doc => doc.data());
-  const result = [];
-
-  for (const appt of appointments) {
-    const duration = services[appt.type] || 15;
-
-    const [hour, minute] = appt.time.split(":").map(Number);
-    const blocks = Math.ceil(duration / 15);
-
-    for (let i = 0; i < blocks; i++) {
-      let m = minute + i * 15;
-      let h = hour;
-
-      if (m >= 60) {
-        h += Math.floor(m / 60);
-        m = m % 60;
-      }
-
-      const timeStr =
-        String(h).padStart(2, "0") +
-        ":" +
-        String(m).padStart(2, "0");
-
-      result.push({
-        date: appt.date,
-        time: timeStr,
-        type: appt.type,
-        worker: appt.worker
-      });
-    }
-  }
-
-  res.json(result);
+  res.json(snapshot.docs.map(d => d.data()));
 });
 
 /* ================= ROOT ================= */
 
 app.get("/", (req, res) => {
-  res.send("Server is running 🚀");
+  res.sendFile(path.join(__dirname, "public", "index.html"));
 });
-
-/* ================= SERVER ================= */
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
-});
+app.listen(PORT, () => console.log("🚀 Running"));
