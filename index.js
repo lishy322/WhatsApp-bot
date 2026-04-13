@@ -3,7 +3,6 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const admin = require("firebase-admin");
 const twilio = require("twilio");
-const OpenAI = require("openai");
 const path = require("path");
 
 const app = express();
@@ -28,11 +27,6 @@ const client = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
-/* ================= OPENAI ================= */
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
 /* ================= הגדרות ================= */
 
 const services = {
@@ -42,91 +36,69 @@ const services = {
 };
 
 const workers = ["דוד", "משה"];
-
 const sessions = {};
 
-/* ================= תאריכים ================= */
+/* ================= תאריך חכם ================= */
 
 function getNextDayOfWeek(dayName) {
-  const daysMap = {
+  const map = {
     "ראשון": 0,
     "שני": 1,
     "שלישי": 2,
     "רביעי": 3,
     "חמישי": 4,
     "שישי": 5,
-    "שבת": 6
+    "שבת": 6,
   };
 
-  const targetDay = daysMap[dayName];
-  if (targetDay === undefined) return null;
+  const target = map[dayName];
+  if (target === undefined) return null;
 
   const now = new Date();
   const today = now.getDay();
 
-  let diff = targetDay - today;
+  let diff = target - today;
   if (diff <= 0) diff += 7;
 
-  const result = new Date();
-  result.setDate(now.getDate() + diff);
+  const d = new Date();
+  d.setDate(now.getDate() + diff);
 
-  return result.toISOString().split("T")[0];
-}
-
-/* ================= slots ================= */
-
-function generateSlots() {
-  const slots = [];
-  for (let h = 8; h <= 18; h++) {
-    for (let m = 0; m < 60; m += 15) {
-      if (h === 18 && m > 0) continue;
-      slots.push(
-        String(h).padStart(2, "0") +
-        ":" +
-        String(m).padStart(2, "0")
-      );
-    }
-  }
-  return slots;
+  return d.toISOString().split("T")[0];
 }
 
 /* ================= בדיקת חפיפה ================= */
 
-async function isSlotTaken(date, time, duration, worker) {
+async function isTaken(date, time, duration, worker) {
   const snapshot = await db.collection("appointments")
     .where("date", "==", date)
     .where("worker", "==", worker)
     .get();
 
-  const [hour, minute] = time.split(":").map(Number);
+  const [h, m] = time.split(":").map(Number);
+  const start = h * 60 + m;
+  const end = start + duration;
 
   for (const doc of snapshot.docs) {
-    const appt = doc.data();
-    const dur = services[appt.type] || 15;
+    const a = doc.data();
+    const dur = services[a.type] || 15;
 
-    const [h, m] = appt.time.split(":").map(Number);
+    const [hh, mm] = a.time.split(":").map(Number);
+    const s = hh * 60 + mm;
+    const e = s + dur;
 
-    const start = h * 60 + m;
-    const end = start + dur;
-
-    const newStart = hour * 60 + minute;
-    const newEnd = newStart + duration;
-
-    if (newStart < end && newEnd > start) {
-      return true;
-    }
+    if (start < e && end > s) return true;
   }
 
   return false;
 }
 
-/* ================= whatsapp ================= */
+/* ================= שליחת הודעה ================= */
 
-async function sendWhatsApp(to, message) {
+async function send(to, text) {
   await client.messages.create({
     from: process.env.TWILIO_WHATSAPP_NUMBER,
-    to: to,
-    body: message,
+    to,
+    body: text,
   });
 }
 
@@ -137,94 +109,90 @@ app.post("/whatsapp", async (req, res) => {
   const from = req.body.From;
 
   if (!sessions[from]) sessions[from] = {};
-  const session = sessions[from];
+  const s = sessions[from];
 
   try {
 
-    if (!session.step) {
-      session.step = "start";
-      await sendWhatsApp(from, "היי 👋 רוצה לקבוע תור?");
+    if (!s.step) {
+      s.step = "start";
+      await send(from, "היי 👋 רוצה לקבוע תור?");
       return res.send("ok");
     }
 
-    if (session.step === "start" && msg.includes("כן")) {
-      session.step = "worker";
-      return sendWhatsApp(from, "לאיזה ספר?\n👉 דוד / משה");
+    if (s.step === "start") {
+      s.step = "worker";
+      return send(from, "לאיזה ספר?\n👉 דוד / משה");
     }
 
-    if (session.step === "worker") {
+    if (s.step === "worker") {
       if (workers.includes(msg)) {
-        session.worker = msg;
-        session.step = "type";
-        return sendWhatsApp(from, "למי התור?\n👉 גבר / אישה / ילד");
+        s.worker = msg;
+        s.step = "type";
+        return send(from, "למי התור?\n👉 גבר / אישה / ילד");
       }
+      return send(from, "בחר: דוד או משה");
     }
 
-    if (session.step === "type") {
+    if (s.step === "type") {
       if (services[msg]) {
-        session.type = msg;
-        session.step = "date";
-        return sendWhatsApp(from, "לאיזה יום? 📅\nמחר / יום שלישי");
+        s.type = msg;
+        s.step = "date";
+        return send(from, "לאיזה יום?\n👉 מחר / יום רביעי");
       }
+      return send(from, "כתוב: גבר / אישה / ילד");
     }
 
-    if (session.step === "date") {
-      let selectedDate = null;
+    if (s.step === "date") {
+      let date = null;
 
       if (msg.includes("מחר")) {
         const d = new Date();
         d.setDate(d.getDate() + 1);
-        selectedDate = d.toISOString().split("T")[0];
+        date = d.toISOString().split("T")[0];
       } else if (msg.includes("יום")) {
         const match = msg.match(/יום\s(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/);
-        if (match) selectedDate = getNextDayOfWeek(match[1]);
+        if (match) date = getNextDayOfWeek(match[1]);
       }
 
-      if (!selectedDate) {
-        return sendWhatsApp(from, "לא הבנתי תאריך 😅");
-      }
+      if (!date) return send(from, "לא הבנתי תאריך 😅");
 
-      session.date = selectedDate;
-      session.step = "time";
-
-      return sendWhatsApp(from, `איזה שעה ל-${selectedDate}?`);
+      s.date = date;
+      s.step = "time";
+      return send(from, `איזה שעה ל-${date}?`);
     }
 
-    if (session.step === "time") {
+    if (s.step === "time") {
       let time = msg.length <= 2 ? msg + ":00" : msg;
 
-      const taken = await isSlotTaken(
-        session.date,
+      const taken = await isTaken(
+        s.date,
         time,
-        services[session.type],
-        session.worker
+        services[s.type],
+        s.worker
       );
 
-      if (taken) {
-        return sendWhatsApp(from, "השעה תפוסה 😅");
-      }
+      if (taken) return send(from, "השעה תפוסה 😅");
 
       await db.collection("appointments").add({
         user: from,
-        date: session.date,
+        date: s.date,
         time,
-        type: session.type,
-        worker: session.worker
+        type: s.type,
+        worker: s.worker,
       });
 
-      await sendWhatsApp(from, `🎉 נקבע תור ל-${session.date} ${time}`);
-
+      await send(from, `🎉 נקבע תור ל-${s.date} בשעה ${time}`);
       sessions[from] = {};
     }
 
-  } catch (err) {
-    console.error(err);
+  } catch (e) {
+    console.error(e);
   }
 
   res.send("ok");
 });
 
-/* ================= UI API ================= */
+/* ================= API ================= */
 
 app.get("/appointments/week", async (req, res) => {
   const snapshot = await db.collection("appointments").get();
@@ -237,5 +205,6 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log("🚀 Running"));
+/* ================= SERVER ================= */
+
+app.listen(8080, () => console.log("🚀 עובד"));
