@@ -188,15 +188,14 @@ app.post("/whatsapp", async (req, res) => {
 
 // ===== API =====
 app.get("/appointments", async (req, res) => {
-  const date = req.query.date;
-
-  const snapshot = await db
-    .collection("appointments")
-    .where("date", "==", date)
-    .get();
-
-  const data = snapshot.docs.map(d => d.data());
-  res.json(data);
+ try {
+    const snapshot = await db.collection("appointments").get();
+    const data = snapshot.docs.map(d => d.data());
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("error");
+  }
 });
 
 app.delete("/appointments", async (req, res) => {
