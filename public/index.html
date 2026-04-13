@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="he">
+<html lang="he" dir="rtl">
 <head>
 <meta charset="UTF-8">
 <title>ניהול תורים</title>
@@ -7,61 +7,33 @@
 <style>
 body {
   font-family: Arial;
-  background: #f1f3f6;
+  background: #f4f6f9;
   margin: 0;
 }
 
 header {
-  background: #111827;
+  background: #0f172a;
   color: white;
-  padding: 15px 20px;
-  font-size: 20px;
+  padding: 15px;
+  font-size: 22px;
 }
 
-.container {
-  padding: 20px;
-}
-
-.controls {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 20px;
-}
-
-button, select {
-  padding: 8px 12px;
-  border-radius: 6px;
-  border: none;
-  cursor: pointer;
-}
-
-button {
-  background: #2563eb;
-  color: white;
-}
-
-.calendar {
+.grid {
   display: grid;
   grid-template-columns: 80px repeat(5, 1fr);
-  gap: 8px;
+  gap: 5px;
+  padding: 20px;
 }
 
 .cell {
   background: white;
   padding: 10px;
-  border-radius: 8px;
+  border-radius: 6px;
   text-align: center;
-  font-size: 13px;
-  cursor: pointer;
-  transition: 0.2s;
+  font-size: 12px;
 }
 
-.cell:hover {
-  transform: scale(1.05);
-}
-
-.header {
-  background: #e5e7eb;
+.time {
   font-weight: bold;
 }
 
@@ -69,13 +41,10 @@ button {
   color: white;
 }
 
-.male { background:#3b82f6; }
-.female { background:#ec4899; }
-.child { background:#10b981; }
+.man { background: #3b82f6; }
+.woman { background: #ec4899; }
+.kid { background: #10b981; }
 
-.empty {
-  color: #9ca3af;
-}
 </style>
 </head>
 
@@ -83,160 +52,54 @@ button {
 
 <header>📅 מערכת ניהול תורים</header>
 
-<div class="container">
-
-<div class="controls">
-  <select id="worker">
-    <option value="david">דוד</option>
-    <option value="moshe">משה</option>
-  </select>
-
-  <button onclick="prevWeek()">⬅ שבוע קודם</button>
-  <button onclick="nextWeek()">שבוע הבא ➡</button>
-</div>
-
-<div id="calendar" class="calendar"></div>
-
-</div>
+<div id="grid" class="grid"></div>
 
 <script>
 
 const days = ["ראשון","שני","שלישי","רביעי","חמישי"];
 
-const slots = [
-  "08:00","08:15","08:30","08:45",
-  "09:00","09:15","09:30","09:45",
-  "10:00","10:15","10:30","10:45",
-  "16:00","16:15","16:30","16:45",
-  "17:00","17:15","17:30","17:45",
-  "18:00","18:15"
-];
-
-let weekOffset = 0;
-let weekDates = [];
-let appointments = [];
-
-// ===== שבוע =====
-function generateWeek() {
-
-  const today = new Date();
-  const start = new Date(today);
-
-  start.setDate(today.getDate() - today.getDay() + (weekOffset * 7));
-
-  weekDates = [];
-
-  for (let i = 0; i < 5; i++) {
-    const d = new Date(start);
-    d.setDate(start.getDate() + i);
-
-    weekDates.push(d.toISOString().split("T")[0]);
-  }
-}
-
-// ===== טעינה =====
-async function load() {
-
-  generateWeek();
-
-  const res = await fetch("/appointments/week");
-  appointments = await res.json();
-
-  render();
-}
-
-// ===== ציור =====
-function render() {
-
-  const cal = document.getElementById("calendar");
-  cal.innerHTML = "";
-
-  cal.innerHTML += `<div class="header"></div>`;
-
-  weekDates.forEach((date, i) => {
-    cal.innerHTML += `<div class="header">${days[i]}<br>${date}</div>`;
-  });
-
-  const worker = document.getElementById("worker").value;
-
-  slots.forEach(time => {
-
-    cal.innerHTML += `<div class="header">${time}</div>`;
-
-    weekDates.forEach(date => {
-
-      const booking = appointments.find(a =>
-        a.date === date &&
-        a.time === time &&
-        a.worker === worker
+function generateTimes() {
+  const times = [];
+  for (let h=8; h<=18; h++) {
+    for (let m=0; m<60; m+=15) {
+      if (h===18 && m>0) continue;
+      times.push(
+        String(h).padStart(2,"0")+":"+
+        String(m).padStart(2,"0")
       );
+    }
+  }
+  return times;
+}
 
-      if (booking) {
-        cal.innerHTML += `
-          <div class="cell booked ${booking.type}"
-            onclick="cancel('${date}','${time}','${worker}')">
-            ${translateType(booking.type)}
-          </div>
-        `;
+async function load() {
+  const res = await fetch("/appointments/week");
+  const data = await res.json();
+
+  const grid = document.getElementById("grid");
+  const times = generateTimes();
+
+  grid.innerHTML = "";
+
+  grid.innerHTML += "<div></div>";
+  days.forEach(d => grid.innerHTML += `<div>${d}</div>`);
+
+  times.forEach(time => {
+    grid.innerHTML += `<div class="cell time">${time}</div>`;
+
+    for (let i=0;i<5;i++) {
+      const match = data.find(a => a.time === time);
+
+      if (match) {
+        let cls = match.type === "גבר" ? "man" :
+                  match.type === "אישה" ? "woman" : "kid";
+
+        grid.innerHTML += `<div class="cell booked ${cls}">${match.type}</div>`;
       } else {
-        cal.innerHTML += `
-          <div class="cell empty"
-            onclick="create('${date}','${time}')">
-            פנוי
-          </div>
-        `;
+        grid.innerHTML += `<div class="cell">פנוי</div>`;
       }
-    });
+    }
   });
-}
-
-// ===== יצירה =====
-async function create(date, time) {
-  const worker = document.getElementById("worker").value;
-
-  await fetch("/appointments", {
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({
-      date, time, worker,
-      type:"male",
-      user:"manual"
-    })
-  });
-
-  load();
-}
-
-// ===== ביטול =====
-async function cancel(date, time, worker) {
-  if (!confirm("לבטל תור?")) return;
-
-  await fetch("/appointments", {
-    method:"DELETE",
-    headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ date,time,worker })
-  });
-
-  load();
-}
-
-// ===== ניווט =====
-function nextWeek() {
-  weekOffset++;
-  load();
-}
-
-function prevWeek() {
-  weekOffset--;
-  load();
-}
-
-// ===== תרגום =====
-function translateType(type) {
-  if (type === "male") return "גבר";
-  if (type === "female") return "אישה";
-  if (type === "child") return "ילד";
-  return "";
 }
 
 load();
