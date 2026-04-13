@@ -2,62 +2,18 @@
 <html lang="he">
 <head>
 <meta charset="UTF-8">
-<title>יומן תורים מתקדם</title>
+<title>יומן שבועי אמיתי</title>
 
 <style>
-body {
-  font-family: Arial;
-  background: #f5f6fa;
-  padding: 20px;
-}
-
-h1 {
-  text-align: center;
-}
-
-.controls {
-  display: flex;
-  gap: 10px;
-  justify-content: center;
-  margin-bottom: 20px;
-}
-
-select, button {
-  padding: 8px;
-}
-
-.grid {
-  display: grid;
-  grid-template-columns: 80px repeat(5, 1fr);
-  gap: 5px;
-}
-
-.cell {
-  background: white;
-  padding: 8px;
-  border-radius: 6px;
-  text-align: center;
-  cursor: pointer;
-  font-size: 12px;
-}
-
-.header {
-  font-weight: bold;
-  background: #ddd;
-}
-
-.booked {
-  background: #e74c3c;
-  color: white;
-}
-
-.male { background:#3498db; }
-.female { background:#e84393; }
-.child { background:#00b894; }
-
-.empty {
-  color: #aaa;
-}
+body { font-family: Arial; background:#f5f6fa; padding:20px }
+.grid { display:grid; grid-template-columns:80px repeat(5,1fr); gap:5px }
+.cell { background:white; padding:8px; border-radius:6px; text-align:center; cursor:pointer; font-size:12px }
+.header { font-weight:bold; background:#ddd }
+.booked { color:white }
+.male { background:#3498db }
+.female { background:#e84393 }
+.child { background:#00b894 }
+.empty { color:#aaa }
 </style>
 </head>
 
@@ -65,14 +21,12 @@ select, button {
 
 <h1>📅 יומן שבועי</h1>
 
-<div class="controls">
-  <select id="worker">
-    <option value="david">דוד</option>
-    <option value="moshe">משה</option>
-  </select>
+<select id="worker">
+  <option value="david">דוד</option>
+  <option value="moshe">משה</option>
+</select>
 
-  <button onclick="load()">טען</button>
-</div>
+<button onclick="load()">טען</button>
 
 <div id="calendar" class="grid"></div>
 
@@ -89,12 +43,34 @@ const slots = [
   "18:00","18:15"
 ];
 
+let weekDates = [];
 let appointments = [];
+
+// ===== יצירת שבוע =====
+function generateWeek() {
+  const today = new Date();
+  const start = new Date(today);
+
+  start.setDate(today.getDate() - today.getDay());
+
+  weekDates = [];
+
+  for (let i = 0; i < 5; i++) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+
+    weekDates.push(d.toISOString().split("T")[0]);
+  }
+}
 
 // ===== טעינה =====
 async function load() {
-  const res = await fetch("/appointments?date=2026-04-12");
+
+  generateWeek();
+
+  const res = await fetch("/appointments/week");
   appointments = await res.json();
+
   render();
 }
 
@@ -106,8 +82,9 @@ function render() {
 
   // header
   cal.innerHTML += `<div class="header"></div>`;
-  days.forEach(d => {
-    cal.innerHTML += `<div class="header">${d}</div>`;
+
+  weekDates.forEach((date, i) => {
+    cal.innerHTML += `<div class="header">${days[i]}<br>${date}</div>`;
   });
 
   const worker = document.getElementById("worker").value;
@@ -116,53 +93,50 @@ function render() {
 
     cal.innerHTML += `<div class="header">${time}</div>`;
 
-    for (let i = 0; i < 5; i++) {
+    weekDates.forEach(date => {
 
       const booking = appointments.find(a =>
-        a.time === time && a.worker === worker
+        a.date === date &&
+        a.time === time &&
+        a.worker === worker
       );
 
       if (booking) {
         cal.innerHTML += `
           <div class="cell booked ${booking.type}"
-            onclick="cancel('${booking.date}','${booking.time}','${booking.worker}')"
+            onclick="cancel('${date}','${time}','${worker}')"
             draggable="true"
-            ondragstart="drag(event,'${booking.time}')"
-            ondrop="drop(event,'${time}')"
-            ondragover="allowDrop(event)"
-          >
+            ondragstart="drag(event,'${date}','${time}')"
+            ondrop="drop(event,'${date}','${time}')"
+            ondragover="allowDrop(event)">
             ${translateType(booking.type)}
           </div>
         `;
       } else {
         cal.innerHTML += `
           <div class="cell empty"
-            onclick="create('${time}')"
-            ondrop="drop(event,'${time}')"
-            ondragover="allowDrop(event)"
-          >
+            onclick="create('${date}','${time}')"
+            ondrop="drop(event,'${date}','${time}')"
+            ondragover="allowDrop(event)">
             פנוי
           </div>
         `;
       }
-    }
+    });
   });
 }
 
-// ===== יצירת תור =====
-async function create(time) {
-
+// ===== יצירה =====
+async function create(date, time) {
   const worker = document.getElementById("worker").value;
 
   await fetch("/appointments", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({
-      date: "2026-04-12",
-      time,
-      worker,
-      type: "male",
-      user: "manual"
+      date, time, worker,
+      type:"male",
+      user:"manual"
     })
   });
 
@@ -171,41 +145,40 @@ async function create(time) {
 
 // ===== ביטול =====
 async function cancel(date, time, worker) {
-
   if (!confirm("לבטל תור?")) return;
 
   await fetch("/appointments", {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ date, time, worker })
+    method:"DELETE",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ date,time,worker })
   });
 
   load();
 }
 
 // ===== DRAG =====
-let draggedTime = null;
+let dragData = {};
 
-function drag(ev, time) {
-  draggedTime = time;
+function drag(ev, date, time) {
+  dragData = { date, time };
 }
 
 function allowDrop(ev) {
   ev.preventDefault();
 }
 
-async function drop(ev, newTime) {
+async function drop(ev, newDate, newTime) {
   ev.preventDefault();
 
   const worker = document.getElementById("worker").value;
 
   await fetch("/appointments", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    method:"PUT",
+    headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({
-      oldDate: "2026-04-12",
-      oldTime: draggedTime,
-      newDate: "2026-04-12",
+      oldDate: dragData.date,
+      oldTime: dragData.time,
+      newDate,
       newTime,
       worker
     })
