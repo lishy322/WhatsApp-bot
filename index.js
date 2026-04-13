@@ -46,6 +46,12 @@ function getNextDay(day){
   return d.toISOString().split("T")[0];
 }
 
+// ===== סגירת ימים =====
+async function isClosed(date){
+  const doc = await db.collection("closedDays").doc(date).get();
+  return doc.exists;
+}
+
 // ===== חפיפות =====
 async function isAvailable(date,time,duration,worker){
   const snap=await db.collection("appointments")
@@ -60,12 +66,14 @@ async function isAvailable(date,time,duration,worker){
   for(const doc of snap.docs){
     const a=doc.data();
     const dur=services[a.type]||15;
+
     const [hh,mm]=a.time.split(":").map(Number);
     const s=hh*60+mm;
     const e=s+dur;
 
     if(start<e && end>s) return false;
   }
+
   return true;
 }
 
@@ -113,8 +121,7 @@ app.post("/whatsapp", async (req,res)=>{
       let date=null;
 
       if(msg.includes("מחר")){
-        const d=new Date();
-        d.setDate(d.getDate()+1);
+        const d=new Date(); d.setDate(d.getDate()+1);
         date=d.toISOString().split("T")[0];
       } else {
         const match=msg.match(/יום\s(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/);
@@ -126,8 +133,15 @@ app.post("/whatsapp", async (req,res)=>{
         return res.send("ok");
       }
 
+      // 🔥 בדיקת יום סגור
+      if(await isClosed(date)){
+        await send(from,"❌ העסק סגור ביום הזה, בחר יום אחר");
+        return res.send("ok");
+      }
+
       s.date=date;
       s.step="time";
+
       await send(from,`איזה שעה ל-${date}?`);
       return res.send("ok");
     }
@@ -152,6 +166,7 @@ app.post("/whatsapp", async (req,res)=>{
 
       await send(from,`🎉 נקבע תור ל-${s.date} ${time}`);
       sessions[from]={};
+
       return res.send("ok");
     }
 
@@ -184,7 +199,8 @@ app.get("/appointments/week", async (req,res)=>{
         date:a.date,
         time:String(hh).padStart(2,"0")+":"+String(mm).padStart(2,"0"),
         type:a.type,
-        worker:a.worker
+        worker:a.worker,
+        user:a.user
       });
     }
   });
@@ -192,19 +208,28 @@ app.get("/appointments/week", async (req,res)=>{
   res.json(result);
 });
 
+// סגירת יום
+app.post("/close-day", async (req,res)=>{
+  const {date}=req.body;
+  await db.collection("closedDays").doc(date).set({closed:true});
+  res.send("ok");
+});
+
+// ביטול
 app.delete("/appointments/:id", async(req,res)=>{
   await db.collection("appointments").doc(req.params.id).delete();
   res.send("ok");
 });
 
+// שינוי
 app.put("/appointments/:id", async(req,res)=>{
   await db.collection("appointments").doc(req.params.id).update(req.body);
   res.send("ok");
 });
 
-// ===== ROOT =====
+// ROOT
 app.get("/",(req,res)=>{
   res.sendFile(path.join(__dirname,"public","index.html"));
 });
 
-app.listen(8080,()=>console.log("🚀 SYSTEM LIVE"));
+app.listen(8080,()=>console.log("🚀 FULL SYSTEM LIVE"));
