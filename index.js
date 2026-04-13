@@ -28,16 +28,6 @@ const services = {
   child: 20
 };
 
-// ===== שעות =====
-const baseSlots = [
-  "08:00","08:15","08:30","08:45",
-  "09:00","09:15","09:30","09:45",
-  "10:00","10:15","10:30","10:45",
-  "16:00","16:15","16:30","16:45",
-  "17:00","17:15","17:30","17:45",
-  "18:00","18:15","18:30"
-];
-
 // ===== Twilio =====
 const sendWhatsApp = async (to, body) => {
   await axios.post(
@@ -56,12 +46,7 @@ const sendWhatsApp = async (to, body) => {
   );
 };
 
-// ===== Helpers =====
-const toMinutes = (t) => {
-  const [h, m] = t.split(":").map(Number);
-  return h * 60 + m;
-};
-
+// ===== helpers =====
 const extractTime = (msg) => {
   const match = msg.match(/\d{1,2}(:\d{2})?/);
   if (!match) return null;
@@ -71,9 +56,13 @@ const extractTime = (msg) => {
 };
 
 const extractDate = (msg) => {
-  const d = new Date();
-  if (msg.includes("מחר")) d.setDate(d.getDate() + 1);
-  return d.toISOString().split("T")[0];
+  const today = new Date();
+
+  if (msg.includes("מחר")) {
+    today.setDate(today.getDate() + 1);
+  }
+
+  return today.toISOString().split("T")[0];
 };
 
 const detectType = (msg) => {
@@ -83,33 +72,10 @@ const detectType = (msg) => {
   return null;
 };
 
-// ===== בדיקת חפיפה =====
-const isAvailable = async (date, time, duration, worker) => {
-
-  const snapshot = await db
-    .collection("appointments")
-    .where("date", "==", date)
-    .where("worker", "==", worker)
-    .get();
-
-  const start = toMinutes(time);
-  const end = start + duration;
-
-  for (let doc of snapshot.docs) {
-    const a = doc.data();
-    const s = toMinutes(a.time);
-    const e = s + a.duration;
-
-    if (start < e && end > s) return false;
-  }
-
-  return true;
-};
-
-// ===== State =====
+// ===== state =====
 const sessions = {};
 
-// ===== WhatsApp webhook =====
+// ===== WhatsApp =====
 app.post("/whatsapp", async (req, res) => {
   try {
     const msg = req.body.Body.toLowerCase();
@@ -122,55 +88,56 @@ app.post("/whatsapp", async (req, res) => {
     const date = extractDate(msg);
     const type = detectType(msg);
 
-    if (date) s.date = date;
     if (time) s.time = time;
+    if (date) s.date = date;
     if (type) s.type = type;
 
     let reply = "";
 
+    // התחלה
     if (msg.includes("היי") || msg.includes("שלום")) {
-      reply = "היי 👋 רוצה לקבוע תור?";
       sessions[user] = {};
+      reply = "היי 👋 רוצה לקבוע תור?";
     }
 
+    // התחלת תהליך
     else if (msg.includes("תור") || msg.includes("כן")) {
       s.step = "worker";
       reply = "לאיזה ספר?\n👉 דוד / משה";
     }
 
+    // עובד
     else if (s.step === "worker" && (msg.includes("דוד") || msg.includes("משה"))) {
       s.worker = msg.includes("דוד") ? "david" : "moshe";
       s.step = "type";
       reply = "למי התור?\n👉 גבר / אישה / ילד";
     }
 
+    // סוג
     else if (s.step === "type" && s.type) {
+      s.step = "date";
+      reply = "לאיזה יום? 📅\nאפשר לכתוב: מחר / יום שלישי / תאריך";
+    }
+
+    // תאריך
+    else if (s.step === "date" && s.date) {
       s.step = "time";
       reply = "איזה שעה?";
     }
 
+    // שעה וסגירה
     else if (s.step === "time" && s.time) {
 
-      const duration = services[s.type];
+      await db.collection("appointments").add({
+        user,
+        date: s.date,
+        time: s.time,
+        type: s.type,
+        worker: s.worker
+      });
 
-      const free = await isAvailable(s.date, s.time, duration, s.worker);
-
-      if (!free) {
-        reply = "השעה תפוסה 😅 נסה שעה אחרת";
-      } else {
-
-        await db.collection("appointments").add({
-          user,
-          date: s.date,
-          time: s.time,
-          type: s.type,
-          duration,
-          worker: s.worker
-        });
-
-        reply = `🎉 נקבע תור ל-${s.date} ${s.time}`;
-        delete sessions[user];
-      }
+      reply = `🎉 נקבע תור ל-${s.date} בשעה ${s.time}`;
+      delete sessions[user];
     }
 
     else {
@@ -187,50 +154,69 @@ app.post("/whatsapp", async (req, res) => {
 });
 
 // ===== API =====
-app.get("/appointments", async (req, res) => {
- try {
+
+// כל התורים
+app.get("/appointments/week", async (req, res) => {
+  try {
     const snapshot = await db.collection("appointments").get();
-    const data = snapshot.docs.map(d => d.data());
+
+    const data = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+
     res.json(data);
+
   } catch (err) {
     console.error(err);
     res.status(500).send("error");
   }
 });
 
+// יצירה מה UI
+app.post("/appointments", async (req, res) => {
+  await db.collection("appointments").add(req.body);
+  res.send("OK");
+});
+
+// ביטול
 app.delete("/appointments", async (req, res) => {
   const { date, time, worker } = req.body;
 
-  const snapshot = await db
-    .collection("appointments")
-    .where("date", "==", date)
-    .where("time", "==", time)
-    .where("worker", "==", worker)
+  const snapshot = await db.collection("appointments")
+    .where("date","==",date)
+    .where("time","==",time)
+    .where("worker","==",worker)
     .get();
 
-  snapshot.forEach(async d => await d.ref.delete());
+  snapshot.forEach(doc => doc.ref.delete());
 
   res.send("deleted");
 });
 
+// שינוי
 app.put("/appointments", async (req, res) => {
   const { oldDate, oldTime, newDate, newTime, worker } = req.body;
 
-  const snapshot = await db
-    .collection("appointments")
-    .where("date", "==", oldDate)
-    .where("time", "==", oldTime)
-    .where("worker", "==", worker)
+  const snapshot = await db.collection("appointments")
+    .where("date","==",oldDate)
+    .where("time","==",oldTime)
+    .where("worker","==",worker)
     .get();
 
-  snapshot.forEach(async doc => {
-    await doc.ref.update({
-      date: newDate,
-      time: newTime
+  snapshot.forEach(doc => {
+    doc.ref.update({
+      date:newDate,
+      time:newTime
     });
   });
 
   res.send("updated");
+});
+
+// ===== root =====
+app.get("/", (req,res)=>{
+  res.sendFile(__dirname + "/public/index.html");
 });
 
 // ===== server =====
