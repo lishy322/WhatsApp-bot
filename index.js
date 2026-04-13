@@ -3,8 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const bodyParser = require("body-parser");
 const admin = require("firebase-admin");
-const twilio = require("twilio");
-const OpenAI = require("openai");
+const axios = require("axios");
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -12,26 +11,22 @@ app.use(bodyParser.json());
 app.use(express.static("public"));
 
 // ===== Firebase =====
-const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
-
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_KEY))
+  });
+}
 const db = admin.firestore();
 
-// ===== OpenAI =====
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// ===== עובדים =====
+const workers = ["david", "moshe"];
 
-// ===== Twilio =====
-const client = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
-
-const FROM = `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`;
+// ===== שירותים =====
+const services = {
+  male: 15,
+  female: 40,
+  child: 20
+};
 
 // ===== שעות =====
 const baseSlots = [
@@ -43,177 +38,201 @@ const baseSlots = [
   "18:00","18:15","18:30"
 ];
 
-// ===== זיכרון =====
+// ===== Twilio =====
+const sendWhatsApp = async (to, body) => {
+  await axios.post(
+    `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Messages.json`,
+    new URLSearchParams({
+      From: "whatsapp:" + process.env.TWILIO_WHATSAPP_NUMBER,
+      To: "whatsapp:" + to,
+      Body: body
+    }),
+    {
+      auth: {
+        username: process.env.TWILIO_ACCOUNT_SID,
+        password: process.env.TWILIO_AUTH_TOKEN
+      }
+    }
+  );
+};
+
+// ===== Helpers =====
+const toMinutes = (t) => {
+  const [h, m] = t.split(":").map(Number);
+  return h * 60 + m;
+};
+
+const extractTime = (msg) => {
+  const match = msg.match(/\d{1,2}(:\d{2})?/);
+  if (!match) return null;
+  let t = match[0];
+  if (!t.includes(":")) t += ":00";
+  return t.padStart(5, "0");
+};
+
+const extractDate = (msg) => {
+  const d = new Date();
+  if (msg.includes("מחר")) d.setDate(d.getDate() + 1);
+  return d.toISOString().split("T")[0];
+};
+
+const detectType = (msg) => {
+  if (msg.includes("אישה")) return "female";
+  if (msg.includes("ילד")) return "child";
+  if (msg.includes("גבר")) return "male";
+  return null;
+};
+
+// ===== בדיקת חפיפה =====
+const isAvailable = async (date, time, duration, worker) => {
+
+  const snapshot = await db
+    .collection("appointments")
+    .where("date", "==", date)
+    .where("worker", "==", worker)
+    .get();
+
+  const start = toMinutes(time);
+  const end = start + duration;
+
+  for (let doc of snapshot.docs) {
+    const a = doc.data();
+    const s = toMinutes(a.time);
+    const e = s + a.duration;
+
+    if (start < e && end > s) return false;
+  }
+
+  return true;
+};
+
+// ===== State =====
 const sessions = {};
 
-// ===== עזר =====
-function normalizeTime(text) {
-  const match = text.match(/(\d{1,2})(?::(\d{2}))?/);
-  if (!match) return null;
+// ===== WhatsApp webhook =====
+app.post("/whatsapp", async (req, res) => {
+  try {
+    const msg = req.body.Body.toLowerCase();
+    const user = req.body.From.replace("whatsapp:", "");
 
-  let h = match[1].padStart(2, "0");
-  let m = match[2] || "00";
+    if (!sessions[user]) sessions[user] = {};
+    let s = sessions[user];
 
-  return `${h}:${m}`;
-}
+    const time = extractTime(msg);
+    const date = extractDate(msg);
+    const type = detectType(msg);
 
-function getToday() {
-  const d = new Date();
-  return d.toISOString().split("T")[0];
-}
+    if (date) s.date = date;
+    if (time) s.time = time;
+    if (type) s.type = type;
 
-// ===== בדיקת זמינות =====
-async function isAvailable(date, time) {
+    let reply = "";
+
+    if (msg.includes("היי") || msg.includes("שלום")) {
+      reply = "היי 👋 רוצה לקבוע תור?";
+      sessions[user] = {};
+    }
+
+    else if (msg.includes("תור") || msg.includes("כן")) {
+      s.step = "worker";
+      reply = "לאיזה ספר?\n👉 דוד / משה";
+    }
+
+    else if (s.step === "worker" && (msg.includes("דוד") || msg.includes("משה"))) {
+      s.worker = msg.includes("דוד") ? "david" : "moshe";
+      s.step = "type";
+      reply = "למי התור?\n👉 גבר / אישה / ילד";
+    }
+
+    else if (s.step === "type" && s.type) {
+      s.step = "time";
+      reply = "איזה שעה?";
+    }
+
+    else if (s.step === "time" && s.time) {
+
+      const duration = services[s.type];
+
+      const free = await isAvailable(s.date, s.time, duration, s.worker);
+
+      if (!free) {
+        reply = "השעה תפוסה 😅 נסה שעה אחרת";
+      } else {
+
+        await db.collection("appointments").add({
+          user,
+          date: s.date,
+          time: s.time,
+          type: s.type,
+          duration,
+          worker: s.worker
+        });
+
+        reply = `🎉 נקבע תור ל-${s.date} ${s.time}`;
+        delete sessions[user];
+      }
+    }
+
+    else {
+      reply = "לא הבנתי 😅 רוצה לקבוע תור?";
+    }
+
+    await sendWhatsApp(user, reply);
+    res.send("OK");
+
+  } catch (err) {
+    console.error(err);
+    res.send("error");
+  }
+});
+
+// ===== API =====
+app.get("/appointments", async (req, res) => {
+  const date = req.query.date;
+
+  const snapshot = await db
+    .collection("appointments")
+    .where("date", "==", date)
+    .get();
+
+  const data = snapshot.docs.map(d => d.data());
+  res.json(data);
+});
+
+app.delete("/appointments", async (req, res) => {
+  const { date, time, worker } = req.body;
+
   const snapshot = await db
     .collection("appointments")
     .where("date", "==", date)
     .where("time", "==", time)
+    .where("worker", "==", worker)
     .get();
 
-  return snapshot.empty;
-}
+  snapshot.forEach(async d => await d.ref.delete());
 
-// ===== שמירת תור =====
-async function saveAppointment(user, date, time, type) {
-  await db.collection("appointments").add({
-    user,
-    date,
-    time,
-    type,
-    createdAt: new Date()
-  });
-}
-
-// ===== שליחת וואטסאפ =====
-async function sendWhatsApp(to, body) {
-  try {
-    await client.messages.create({
-      from: FROM,
-      to,
-      body
-    });
-  } catch (err) {
-    console.error("TWILIO ERROR:", err.message);
-  }
-}
-
-// ===== AI =====
-async function askAI(text) {
-  try {
-    const res = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: text }],
-    });
-
-    return res.choices[0].message.content;
-  } catch (err) {
-    return null;
-  }
-}
-
-// ===== Webhook =====
-app.post("/whatsapp", async (req, res) => {
-  const incoming = req.body.Body.toLowerCase();
-  const user = req.body.From;
-
-  if (!sessions[user]) {
-    sessions[user] = {};
-  }
-
-  let session = sessions[user];
-
-  // ===== זיהוי תור =====
-  if (incoming.includes("תור")) {
-    session.intent = "book";
-    return sendWhatsApp(user, "מעולה 👍 איזה שעה נוחה לך?");
-  }
-
-  // ===== זמן =====
-  const time = normalizeTime(incoming);
-  if (time) {
-    session.time = time;
-    session.date = session.date || getToday();
-
-    return sendWhatsApp(user, "למי התור? גבר / אישה / ילד");
-  }
-
-  // ===== סוג =====
-  if (incoming.includes("גבר") || incoming.includes("אישה") || incoming.includes("ילד")) {
-    session.type = incoming.includes("גבר") ? "male"
-      : incoming.includes("אישה") ? "female"
-      : "child";
-
-    const free = await isAvailable(session.date, session.time);
-
-    if (!free) {
-      return sendWhatsApp(user, "❌ השעה תפוסה, בחר שעה אחרת");
-    }
-
-    await saveAppointment(user, session.date, session.time, session.type);
-
-    sendWhatsApp(user, `🎉 נקבע תור ל-${session.date} בשעה ${session.time}`);
-
-    sessions[user] = {};
-    return;
-  }
-
-  // ===== fallback AI =====
-  const ai = await askAI(incoming);
-
-  if (ai) {
-    return sendWhatsApp(user, ai);
-  }
-
-  return sendWhatsApp(user, "לא הבנתי 😅 רוצה לקבוע תור?");
+  res.send("deleted");
 });
 
-// ===== API ליומן =====
-app.get("/appointments", async (req, res) => {
-  const date = req.query.date;
-
-  if (!date) return res.json([]);
+app.put("/appointments", async (req, res) => {
+  const { oldDate, oldTime, newDate, newTime, worker } = req.body;
 
   const snapshot = await db
     .collection("appointments")
-    .where("date", "==", date)
+    .where("date", "==", oldDate)
+    .where("time", "==", oldTime)
+    .where("worker", "==", worker)
     .get();
 
-  const data = snapshot.docs.map(doc => doc.data());
+  snapshot.forEach(async doc => {
+    await doc.ref.update({
+      date: newDate,
+      time: newTime
+    });
+  });
 
-  res.json(data);
+  res.send("updated");
 });
 
-// ===== תזכורות =====
-app.get("/run-reminders", async (req, res) => {
-  const now = new Date();
-
-  const snapshot = await db.collection("appointments").get();
-
-  for (const doc of snapshot.docs) {
-    const data = doc.data();
-
-    const appt = new Date(`${data.date}T${data.time}`);
-    const diff = (appt - now) / 60000;
-
-    if (diff < 1440 && !data.reminder1) {
-      await sendWhatsApp(data.user, `📅 תזכורת: מחר יש לך תור ב-${data.time}`);
-      await doc.ref.update({ reminder1: true });
-    }
-
-    if (diff < 60 && !data.reminder2) {
-      await sendWhatsApp(data.user, `⏰ תזכורת: התור בעוד שעה`);
-      await doc.ref.update({ reminder2: true });
-    }
-  }
-
-  res.send("OK");
-});
-
-// ===== root =====
-app.get("/", (req, res) => {
-  res.sendFile(__dirname + "/public/index.html");
-});
-
-// ===== run =====
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log("Server running"));
+// ===== server =====
+app.listen(8080, () => console.log("🚀 Server running"));
