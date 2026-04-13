@@ -2,55 +2,43 @@
 <html lang="he" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<title>ניהול תורים</title>
+<title>יומן תורים</title>
 
 <style>
-body {
-  font-family: Arial;
-  background: #f4f6f9;
-  margin: 0;
-}
+body { font-family: Arial; background:#f5f6fa; margin:0 }
+header { background:#111827; color:white; padding:15px }
 
-header {
-  background: #0f172a;
-  color: white;
-  padding: 15px;
-  font-size: 22px;
-}
+select { margin:10px; padding:8px }
 
 .grid {
-  display: grid;
-  grid-template-columns: 80px repeat(5, 1fr);
-  gap: 5px;
-  padding: 20px;
+  display:grid;
+  grid-template-columns:80px repeat(5,1fr);
+  gap:5px;
+  padding:10px;
 }
 
 .cell {
-  background: white;
-  padding: 10px;
-  border-radius: 6px;
-  text-align: center;
-  font-size: 12px;
+  background:white;
+  padding:8px;
+  text-align:center;
+  border-radius:6px;
 }
 
-.time {
-  font-weight: bold;
-}
-
-.booked {
-  color: white;
-}
-
-.man { background: #3b82f6; }
-.woman { background: #ec4899; }
-.kid { background: #10b981; }
+.man { background:#3b82f6; color:white }
+.woman { background:#ec4899; color:white }
+.kid { background:#10b981; color:white }
 
 </style>
 </head>
 
 <body>
 
-<header>📅 מערכת ניהול תורים</header>
+<header>📅 יומן תורים</header>
+
+<select id="worker" onchange="load()">
+  <option value="דוד">דוד</option>
+  <option value="משה">משה</option>
+</select>
 
 <div id="grid" class="grid"></div>
 
@@ -58,45 +46,46 @@ header {
 
 const days = ["ראשון","שני","שלישי","רביעי","חמישי"];
 
-function generateTimes() {
-  const times = [];
-  for (let h=8; h<=18; h++) {
-    for (let m=0; m<60; m+=15) {
-      if (h===18 && m>0) continue;
-      times.push(
+function times(){
+  let arr=[];
+  for(let h=8;h<=18;h++){
+    for(let m=0;m<60;m+=15){
+      if(h===18 && m>0) continue;
+      arr.push(
         String(h).padStart(2,"0")+":"+
         String(m).padStart(2,"0")
       );
     }
   }
-  return times;
+  return arr;
 }
 
-async function load() {
+async function load(){
+  const worker = document.getElementById("worker").value;
+
   const res = await fetch("/appointments/week");
   const data = await res.json();
 
   const grid = document.getElementById("grid");
-  const times = generateTimes();
-
-  grid.innerHTML = "";
+  grid.innerHTML="";
 
   grid.innerHTML += "<div></div>";
-  days.forEach(d => grid.innerHTML += `<div>${d}</div>`);
+  days.forEach(d=>grid.innerHTML+=`<div>${d}</div>`);
 
-  times.forEach(time => {
-    grid.innerHTML += `<div class="cell time">${time}</div>`;
+  times().forEach(t=>{
+    grid.innerHTML+=`<div class="cell">${t}</div>`;
 
-    for (let i=0;i<5;i++) {
-      const match = data.find(a => a.time === time);
+    for(let i=0;i<5;i++){
 
-      if (match) {
-        let cls = match.type === "גבר" ? "man" :
-                  match.type === "אישה" ? "woman" : "kid";
+      const a = data.find(x=>x.time===t && x.worker===worker);
 
-        grid.innerHTML += `<div class="cell booked ${cls}">${match.type}</div>`;
+      if(a){
+        let cls = a.type==="גבר"?"man":
+                  a.type==="אישה"?"woman":"kid";
+
+        grid.innerHTML+=`<div class="cell ${cls}">${a.type}</div>`;
       } else {
-        grid.innerHTML += `<div class="cell">פנוי</div>`;
+        grid.innerHTML+=`<div class="cell">פנוי</div>`;
       }
     }
   });
