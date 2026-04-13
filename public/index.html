@@ -2,93 +2,166 @@
 <html lang="he" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<title>יומן תורים</title>
+<title>ניהול תורים</title>
 
 <style>
-body { font-family: Arial; background:#f5f6fa; margin:0 }
-header { background:#111827; color:white; padding:15px }
+body{font-family:Arial;background:#f3f4f6;margin:0}
+header{background:#111827;color:#fff;padding:15px}
 
-select { margin:10px; padding:8px }
+.controls{padding:10px}
 
-.grid {
-  display:grid;
-  grid-template-columns:80px repeat(5,1fr);
-  gap:5px;
-  padding:10px;
+.grid{
+display:grid;
+grid-template-columns:80px repeat(5,1fr);
+gap:6px;
+padding:10px;
 }
 
-.cell {
-  background:white;
-  padding:8px;
-  text-align:center;
-  border-radius:6px;
+.cell{
+background:#fff;
+padding:8px;
+text-align:center;
+border-radius:6px;
+cursor:pointer;
 }
 
-.man { background:#3b82f6; color:white }
-.woman { background:#ec4899; color:white }
-.kid { background:#10b981; color:white }
-
+.man{background:#3b82f6;color:#fff}
+.woman{background:#ec4899;color:#fff}
+.kid{background:#10b981;color:#fff}
+.heavy{border:2px solid red}
 </style>
 </head>
 
 <body>
 
-<header>📅 יומן תורים</header>
+<header>📅 מערכת ניהול תורים</header>
 
+<div class="controls">
 <select id="worker" onchange="load()">
-  <option value="דוד">דוד</option>
-  <option value="משה">משה</option>
+<option value="דוד">דוד</option>
+<option value="משה">משה</option>
 </select>
+
+<input type="range" min="0.7" max="1.5" step="0.1" value="1" onchange="zoom(this.value)">
+<button onclick="closeDay()">סגור יום</button>
+</div>
 
 <div id="grid" class="grid"></div>
 
 <script>
 
-const days = ["ראשון","שני","שלישי","רביעי","חמישי"];
-
-function times(){
-  let arr=[];
-  for(let h=8;h<=18;h++){
-    for(let m=0;m<60;m+=15){
-      if(h===18 && m>0) continue;
-      arr.push(
-        String(h).padStart(2,"0")+":"+
-        String(m).padStart(2,"0")
-      );
-    }
-  }
-  return arr;
+function zoom(v){
+document.body.style.transform=`scale(${v})`;
 }
 
+function times(){
+let arr=[];
+for(let h=8;h<=18;h++){
+for(let m=0;m<60;m+=15){
+if(h===18&&m>0) continue;
+arr.push(String(h).padStart(2,"0")+":"+String(m).padStart(2,"0"));
+}}
+return arr;
+}
+
+let dragId=null;
+
 async function load(){
-  const worker = document.getElementById("worker").value;
 
-  const res = await fetch("/appointments/week");
-  const data = await res.json();
+const worker=document.getElementById("worker").value;
+const res=await fetch("/appointments/week");
+const data=await res.json();
 
-  const grid = document.getElementById("grid");
-  grid.innerHTML="";
+const grid=document.getElementById("grid");
+grid.innerHTML="";
 
-  grid.innerHTML += "<div></div>";
-  days.forEach(d=>grid.innerHTML+=`<div>${d}</div>`);
+const today=new Date();
+const dates=[];
 
-  times().forEach(t=>{
-    grid.innerHTML+=`<div class="cell">${t}</div>`;
+for(let i=0;i<5;i++){
+const d=new Date();
+d.setDate(today.getDate()-today.getDay()+i);
+dates.push(d.toISOString().split("T")[0]);
+}
 
-    for(let i=0;i<5;i++){
+grid.innerHTML+="<div></div>";
 
-      const a = data.find(x=>x.time===t && x.worker===worker);
+dates.forEach(d=>{
+const nice=new Date(d).toLocaleDateString("he-IL",{weekday:"long",day:"numeric"});
+grid.innerHTML+=`<div><b>${nice}</b><br>${d}</div>`;
+});
 
-      if(a){
-        let cls = a.type==="גבר"?"man":
-                  a.type==="אישה"?"woman":"kid";
+times().forEach(t=>{
+grid.innerHTML+=`<div class="cell">${t}</div>`;
 
-        grid.innerHTML+=`<div class="cell ${cls}">${a.type}</div>`;
-      } else {
-        grid.innerHTML+=`<div class="cell">פנוי</div>`;
-      }
-    }
-  });
+dates.forEach(date=>{
+
+const a=data.find(x=>
+x.time===t &&
+x.worker===worker &&
+x.date===date
+);
+
+const count=data.filter(x=>x.date===date && x.worker===worker).length;
+
+let heavy=count>10?"heavy":"";
+
+if(a){
+
+let cls=a.type==="גבר"?"man":a.type==="אישה"?"woman":"kid";
+
+const visits=data.filter(x=>x.user===a.user).length;
+
+grid.innerHTML+=`
+<div class="cell ${cls} ${heavy}" draggable="true"
+ondragstart="drag('${a.id}')"
+onclick="cancel('${a.id}')">
+${a.type} (${visits})
+</div>`;
+
+}else{
+
+grid.innerHTML+=`
+<div class="cell ${heavy}"
+ondragover="allowDrop(event)"
+ondrop="drop('${date}','${t}')">
+פנוי
+</div>`;
+}
+
+});
+
+});
+
+}
+
+function drag(id){dragId=id;}
+function allowDrop(e){e.preventDefault();}
+
+async function drop(date,time){
+await fetch("/appointments/"+dragId,{
+method:"PUT",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify({date,time})
+});
+load();
+}
+
+async function cancel(id){
+if(!confirm("לבטל תור?")) return;
+await fetch("/appointments/"+id,{method:"DELETE"});
+load();
+}
+
+async function closeDay(){
+const date=prompt("הכנס תאריך YYYY-MM-DD");
+if(!date) return;
+await fetch("/close-day",{
+method:"POST",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify({date})
+});
+alert("יום נסגר");
 }
 
 load();
