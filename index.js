@@ -307,5 +307,15 @@ app.post("/appointments/move", (req, res) => {
 
   res.send({ success: true });
 });
+app.post("/appointments/manual", async (req,res)=>{
+  await db.collection("appointments").add(req.body);
+  res.send("ok");
+});
+
+app.delete("/appointments/:id", async (req,res)=>{
+  await db.collection("appointments").doc(req.params.id).delete();
+  res.send("ok");
+});
+
 
 app.listen(8080,()=>console.log("🚀 FULL SYSTEM READY"));
