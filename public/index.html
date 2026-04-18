@@ -2,205 +2,247 @@
 <html lang="he">
 <head>
 <meta charset="UTF-8">
-<title>יומן תורים</title>
+<title>ניהול תורים</title>
 
 <style>
-body {
-  margin:0;
-  font-family:Arial;
-  direction:rtl;
-  background:#f1f5f9;
+body {font-family:Arial;margin:0;background:#f1f5f9;direction:rtl;}
+
+.header{
+background:#0f172a;color:#fff;padding:15px;
+display:flex;justify-content:space-between;align-items:center;
 }
 
-.header {
-  background:#0f172a;
-  color:white;
-  padding:15px;
-  display:flex;
-  justify-content:space-between;
+button{
+padding:6px 10px;border:none;border-radius:6px;
+background:#3b82f6;color:#fff;cursor:pointer;
 }
 
-.controls button {
-  margin-left:5px;
-  padding:6px 10px;
-  border:none;
-  border-radius:6px;
-  background:#3b82f6;
-  color:white;
-  cursor:pointer;
+.calendar{
+display:grid;
+grid-template-columns:repeat(7,1fr);
+gap:8px;
+padding:10px;
 }
 
-.calendar {
-  display:grid;
-  grid-template-columns: 80px repeat(5,1fr);
+.day{
+background:#fff;border-radius:10px;padding:6px;
+min-height:110px;cursor:pointer;
+box-shadow:0 2px 4px rgba(0,0,0,0.1);
 }
 
-.time {
-  border-bottom:1px solid #ddd;
-  padding:8px;
-  font-size:12px;
-  background:#f8fafc;
+.event{
+font-size:11px;padding:3px;border-radius:6px;margin-top:3px;color:#fff;
 }
 
-.day-header {
-  text-align:center;
-  padding:10px;
-  font-weight:bold;
-  background:#e2e8f0;
-  border-bottom:1px solid #ccc;
+.man{background:#3b82f6;}
+.woman{background:#ec4899;}
+.kid{background:#10b981;}
+.manual{border:2px solid black;}
+
+.modal{
+position:fixed;top:0;left:0;right:0;bottom:0;
+background:rgba(0,0,0,0.6);
+display:none;justify-content:center;align-items:center;
 }
 
-.cell {
-  border:1px solid #eee;
-  height:60px;
-  position:relative;
+.modal-content{
+background:#fff;padding:20px;border-radius:10px;width:350px;
 }
 
-.event {
-  position:absolute;
-  top:5px;
-  left:5px;
-  right:5px;
-  padding:5px;
-  border-radius:6px;
-  color:white;
-  font-size:12px;
-  cursor:grab;
+.slot{padding:6px;border-bottom:1px solid #ddd;cursor:pointer;}
+
+.stats{
+padding:10px;display:flex;gap:20px;
 }
 
-.gavar { background:#3b82f6; }
-.isha { background:#ec4899; }
-.yeled { background:#10b981; }
-
+.card{
+background:#fff;padding:10px;border-radius:8px;
+}
 </style>
 </head>
 
 <body>
 
 <div class="header">
-  <div>📅 יומן שבועי</div>
-  <div class="controls">
-    <button onclick="prevWeek()">⬅️</button>
-    <button onclick="nextWeek()">➡️</button>
+  <div id="monthTitle"></div>
+
+  <div>
+    <button onclick="prevMonth()">⬅️</button>
+    <button onclick="nextMonth()">➡️</button>
+    <button onclick="closeDay()">חסום יום</button>
   </div>
+</div>
+
+<div class="stats">
+  <div class="card">וואטסאפ: <span id="wa">0</span></div>
+  <div class="card">ידני: <span id="manual">0</span></div>
 </div>
 
 <div id="calendar" class="calendar"></div>
 
+<!-- MODAL -->
+<div id="modal" class="modal" onclick="closeModal()">
+  <div class="modal-content" onclick="event.stopPropagation()">
+    <h3 id="dayTitle"></h3>
+    <div id="slots"></div>
+    <button onclick="createManual()">➕ תור ידני</button>
+  </div>
+</div>
+
 <script>
 
-let current = new Date();
-let appointments = [];
+let current=new Date();
+let data=[];
 
-function getWeek(){
-  const start = new Date(current);
-  start.setDate(start.getDate() - start.getDay());
-
-  let days=[];
-  for(let i=0;i<5;i++){
-    let d=new Date(start);
-    d.setDate(start.getDate()+i);
-    days.push(d);
-  }
-  return days;
+/* ===== LOAD ===== */
+async function load(){
+  const res=await fetch("/appointments/week");
+  data=await res.json();
+  render();
 }
 
+/* ===== MONTH ===== */
+function prevMonth(){current.setMonth(current.getMonth()-1);render();}
+function nextMonth(){current.setMonth(current.getMonth()+1);render();}
+
+function getDays(){
+  const year=current.getFullYear();
+  const month=current.getMonth();
+  const last=new Date(year,month+1,0);
+  let arr=[];
+  for(let i=1;i<=last.getDate();i++){
+    arr.push(new Date(year,month,i));
+  }
+  return arr;
+}
+
+/* ===== RENDER ===== */
 function render(){
 
   const cal=document.getElementById("calendar");
   cal.innerHTML="";
 
-  const week=getWeek();
+  document.getElementById("monthTitle").innerText =
+    current.toLocaleDateString("he-IL",{month:"long",year:"numeric"});
 
-  cal.innerHTML += "<div></div>";
-  week.forEach(d=>{
-    cal.innerHTML += `<div class="day-header">${d.toLocaleDateString("he-IL")}</div>`;
+  let wa=0,manual=0;
+
+  getDays().forEach(d=>{
+    const date=d.toISOString().split("T")[0];
+
+    const div=document.createElement("div");
+    div.className="day";
+    div.innerHTML=`<b>${d.getDate()}</b>`;
+
+    const daily=data.filter(a=>a.date===date);
+
+    daily.forEach(a=>{
+      if(a.source==="whatsapp") wa++;
+      else manual++;
+
+      const el=document.createElement("div");
+      el.className="event";
+
+      if(a.type==="גבר") el.classList.add("man");
+      if(a.type==="אישה") el.classList.add("woman");
+      if(a.type==="ילד") el.classList.add("kid");
+
+      if(a.source==="manual") el.classList.add("manual");
+
+      el.innerText=`${a.time} ${a.name || a.type}`;
+
+      el.onclick=(e)=>{
+        e.stopPropagation();
+        cancel(a.id);
+      };
+
+      div.appendChild(el);
+    });
+
+    div.onclick=()=>openDay(date);
+
+    cal.appendChild(div);
   });
+
+  document.getElementById("wa").innerText=wa;
+  document.getElementById("manual").innerText=manual;
+}
+
+/* ===== DAY VIEW ===== */
+function openDay(date){
+
+  document.getElementById("modal").style.display="flex";
+  document.getElementById("dayTitle").innerText=date;
+
+  const container=document.getElementById("slots");
+  container.innerHTML="";
 
   for(let h=8;h<=18;h++){
 
-    cal.innerHTML += `<div class="time">${h}:00</div>`;
+    const time=(h<10?"0":"")+h+":00";
 
-    week.forEach(day=>{
+    const found=data.find(a=>a.date===date && a.time===time);
 
-      const dateStr=day.toISOString().split("T")[0];
-      const time=`${h}:00`;
+    const div=document.createElement("div");
+    div.className="slot";
 
-      const cell=document.createElement("div");
-      cell.className="cell";
-      cell.dataset.date=dateStr;
-      cell.dataset.time=time;
+    if(found){
+      div.innerText=`${time} - ${found.name || found.type} (${found.worker})`;
+      div.onclick=()=>cancel(found.id);
+    }else{
+      div.innerText=`${time} - פנוי`;
+      div.onclick=()=>createAt(date,time);
+    }
 
-      const found=appointments.find(a=>a.date===dateStr && a.time===time);
-
-      if(found){
-        const ev=document.createElement("div");
-        ev.className="event";
-        ev.draggable=true;
-
-        if(found.type==="גבר") ev.classList.add("gavar");
-        if(found.type==="אישה") ev.classList.add("isha");
-        if(found.type==="ילד") ev.classList.add("yeled");
-
-        ev.innerText = `${found.time}\n${found.name || found.type}\n(${found.worker})`;
-
-        ev.dataset.id=found.id;
-
-        ev.addEventListener("dragstart",dragStart);
-
-        cell.appendChild(ev);
-      }
-
-      cell.addEventListener("dragover",e=>e.preventDefault());
-      cell.addEventListener("drop",drop);
-
-      cal.appendChild(cell);
-    });
+    container.appendChild(div);
   }
 }
 
-let dragged=null;
-
-function dragStart(e){
-  dragged=e.target;
+function closeModal(){
+  document.getElementById("modal").style.display="none";
 }
 
-async function drop(e){
+/* ===== ACTIONS ===== */
 
-  if(!dragged) return;
+async function cancel(id){
+  if(!confirm("לבטל תור?")) return;
+  await fetch("/appointments/"+id,{method:"DELETE"});
+  load();
+}
 
-  const newDate = e.currentTarget.dataset.date;
-  const newTime = e.currentTarget.dataset.time;
-  const id = dragged.dataset.id;
+async function createAt(date,time){
+  const name=prompt("שם לקוח:");
+  const worker=prompt("ספר (דוד/משה):");
 
-  await fetch("/appointments/move",{
+  await fetch("/appointments/manual",{
     method:"POST",
     headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({id,newDate,newTime})
+    body:JSON.stringify({
+      date,time,name,worker,type:"גבר",source:"manual"
+    })
   });
 
   load();
 }
 
-function prevWeek(){
-  current.setDate(current.getDate()-7);
-  render();
+function createManual(){
+  const date=prompt("תאריך:");
+  const time=prompt("שעה:");
+  createAt(date,time);
 }
 
-function nextWeek(){
-  current.setDate(current.getDate()+7);
-  render();
-}
-
-async function load(){
-  const res = await fetch("/appointments/week");
-  appointments = await res.json();
-  render();
+async function closeDay(){
+  const date=prompt("תאריך לחסימה:");
+  await fetch("/close-day",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({date})
+  });
+  alert("יום נחסם");
 }
 
 load();
 
 </script>
-
 </body>
 </html>
