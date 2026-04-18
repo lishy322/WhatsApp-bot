@@ -5,66 +5,122 @@
 <title>ניהול תורים</title>
 
 <style>
-body{font-family:Arial;background:#f3f4f6;margin:0}
-header{background:#111827;color:#fff;padding:15px}
 
-.controls{padding:10px}
+body{
+margin:0;
+font-family:Arial;
+background:#f3f4f6;
+}
 
-.grid{
+header{
+background:#111827;
+color:white;
+padding:15px;
+display:flex;
+justify-content:space-between;
+}
+
+.container{
+padding:15px;
+}
+
+.controls{
+margin-bottom:10px;
+}
+
+.calendar{
 display:grid;
-grid-template-columns:80px repeat(5,1fr);
-gap:6px;
-padding:10px;
+grid-template-columns:60px repeat(5,1fr);
+height:80vh;
+border:1px solid #ddd;
+background:white;
 }
 
-.cell{
-background:#fff;
-padding:8px;
-text-align:center;
+.hour{
+border-bottom:1px solid #eee;
+font-size:12px;
+padding:2px;
+}
+
+.day{
+border-left:1px solid #eee;
+position:relative;
+}
+
+.event{
+position:absolute;
+left:5px;
+right:5px;
 border-radius:6px;
-cursor:pointer;
+color:white;
+padding:4px;
+font-size:12px;
+cursor:grab;
 }
 
-.man{background:#3b82f6;color:#fff}
-.woman{background:#ec4899;color:#fff}
-.kid{background:#10b981;color:#fff}
-.heavy{border:2px solid red}
+.man{background:#3b82f6;}
+.woman{background:#ec4899;}
+.kid{background:#10b981;}
+
+.closed{
+background:#eee;
+height:100%;
+position:absolute;
+top:0;
+left:0;
+right:0;
+opacity:0.6;
+display:flex;
+align-items:center;
+justify-content:center;
+font-weight:bold;
+}
+
 </style>
 </head>
 
 <body>
 
-<header>📅 מערכת ניהול תורים</header>
+<header>
+<div>📅 ניהול תורים</div>
 
-<div class="controls">
+<div>
 <select id="worker" onchange="load()">
 <option value="דוד">דוד</option>
 <option value="משה">משה</option>
 </select>
 
-<input type="range" min="0.7" max="1.5" step="0.1" value="1" onchange="zoom(this.value)">
 <button onclick="closeDay()">סגור יום</button>
 </div>
+</header>
 
-<div id="grid" class="grid"></div>
+<div class="container">
+
+<div class="calendar" id="calendar"></div>
+
+</div>
 
 <script>
 
-function zoom(v){
-document.body.style.transform=`scale(${v})`;
+function getWeek(){
+  const today=new Date();
+  const days=[];
+  for(let i=0;i<5;i++){
+    const d=new Date();
+    d.setDate(today.getDate()-today.getDay()+i);
+    days.push(d);
+  }
+  return days;
 }
 
-function times(){
-let arr=[];
-for(let h=8;h<=18;h++){
-for(let m=0;m<60;m+=15){
-if(h===18&&m>0) continue;
-arr.push(String(h).padStart(2,"0")+":"+String(m).padStart(2,"0"));
-}}
-return arr;
+function timeToY(time){
+  const [h,m]=time.split(":").map(Number);
+  return ((h-8)*60 + m) * 1.2;
 }
 
-let dragId=null;
+function durationToHeight(d){
+  return d * 1.2;
+}
 
 async function load(){
 
@@ -72,96 +128,97 @@ const worker=document.getElementById("worker").value;
 const res=await fetch("/appointments/week");
 const data=await res.json();
 
-const grid=document.getElementById("grid");
-grid.innerHTML="";
+const cal=document.getElementById("calendar");
+cal.innerHTML="";
 
-const today=new Date();
-const dates=[];
+const days=getWeek();
 
-for(let i=0;i<5;i++){
-const d=new Date();
-d.setDate(today.getDate()-today.getDay()+i);
-dates.push(d.toISOString().split("T")[0]);
+// שעות צד
+for(let h=8;h<=18;h++){
+  cal.innerHTML+=`<div class="hour">${h}:00</div>`;
+  days.forEach(()=>cal.innerHTML+=`<div class="day"></div>`);
 }
 
-grid.innerHTML+="<div></div>";
+// יצירת בלוקים
+days.forEach((day,dayIndex)=>{
 
-dates.forEach(d=>{
-const nice=new Date(d).toLocaleDateString("he-IL",{weekday:"long",day:"numeric"});
-grid.innerHTML+=`<div><b>${nice}</b><br>${d}</div>`;
+  const dateStr=day.toISOString().split("T")[0];
+
+  const dayEvents=data.filter(a =>
+    a.worker===worker && a.date===dateStr
+  );
+
+  const dayDivs = document.querySelectorAll(".day");
+
+  const col = dayIndex+1;
+
+  dayEvents.forEach(a=>{
+
+    const index = col + (Math.floor((parseInt(a.time.split(":")[0])-8))*6);
+
+    const el = dayDivs[index];
+
+    const div=document.createElement("div");
+
+    const cls =
+      a.type==="גבר"?"man":
+      a.type==="אישה"?"woman":"kid";
+
+    div.className="event "+cls;
+    div.style.top = timeToY(a.time)+"px";
+    div.style.height = durationToHeight(a.duration)+"px";
+
+    div.innerText = a.type;
+
+    div.draggable=true;
+
+    div.ondragstart=()=>window.dragId=a.id;
+
+    div.onclick=async ()=>{
+      if(confirm("לבטל תור?")){
+        await fetch("/appointments/"+a.id,{method:"DELETE"});
+        load();
+      }
+    };
+
+    el.appendChild(div);
+
+  });
+
 });
 
-times().forEach(t=>{
-grid.innerHTML+=`<div class="cell">${t}</div>`;
-
-dates.forEach(date=>{
-
-const a=data.find(x=>
-x.time===t &&
-x.worker===worker &&
-x.date===date
-);
-
-const count=data.filter(x=>x.date===date && x.worker===worker).length;
-
-let heavy=count>10?"heavy":"";
-
-if(a){
-
-let cls=a.type==="גבר"?"man":a.type==="אישה"?"woman":"kid";
-
-const visits=data.filter(x=>x.user===a.user).length;
-
-grid.innerHTML+=`
-<div class="cell ${cls} ${heavy}" draggable="true"
-ondragstart="drag('${a.id}')"
-onclick="cancel('${a.id}')">
-${a.type} (${visits})
-</div>`;
-
-}else{
-
-grid.innerHTML+=`
-<div class="cell ${heavy}"
-ondragover="allowDrop(event)"
-ondrop="drop('${date}','${t}')">
-פנוי
-</div>`;
 }
 
+// גרירה
+document.addEventListener("dragover",e=>e.preventDefault());
+
+document.addEventListener("drop",async e=>{
+  if(!window.dragId) return;
+
+  const date=prompt("תאריך חדש YYYY-MM-DD");
+  const time=prompt("שעה חדשה HH:MM");
+
+  await fetch("/appointments/"+window.dragId,{
+    method:"PUT",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({date,time})
+  });
+
+  load();
 });
 
-});
-
-}
-
-function drag(id){dragId=id;}
-function allowDrop(e){e.preventDefault();}
-
-async function drop(date,time){
-await fetch("/appointments/"+dragId,{
-method:"PUT",
-headers:{"Content-Type":"application/json"},
-body:JSON.stringify({date,time})
-});
-load();
-}
-
-async function cancel(id){
-if(!confirm("לבטל תור?")) return;
-await fetch("/appointments/"+id,{method:"DELETE"});
-load();
-}
-
+// סגירת יום
 async function closeDay(){
-const date=prompt("הכנס תאריך YYYY-MM-DD");
-if(!date) return;
-await fetch("/close-day",{
-method:"POST",
-headers:{"Content-Type":"application/json"},
-body:JSON.stringify({date})
-});
-alert("יום נסגר");
+  const date=prompt("תאריך YYYY-MM-DD");
+  if(!date) return;
+
+  await fetch("/close-day",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({date})
+  });
+
+  alert("יום נסגר");
 }
 
 load();
