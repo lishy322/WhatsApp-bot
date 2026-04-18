@@ -179,30 +179,23 @@ app.post("/whatsapp", async (req,res)=>{
 
 // ===== API =====
 app.get("/appointments/week", async (req,res)=>{
-  const snap=await db.collection("appointments").get();
+  const snap = await db.collection("appointments").get();
+
   const result=[];
 
   snap.docs.forEach(doc=>{
     const a=doc.data();
-    const dur=services[a.type]||15;
+    const dur=services[a.type] || 15;
 
-    const [h,m]=a.time.split(":").map(Number);
-    const blocks=Math.ceil(dur/15);
-
-    for(let i=0;i<blocks;i++){
-      let mm=m+i*15;
-      let hh=h;
-      if(mm>=60){hh+=Math.floor(mm/60);mm%=60;}
-
-      result.push({
-        id:doc.id,
-        date:a.date,
-        time:String(hh).padStart(2,"0")+":"+String(mm).padStart(2,"0"),
-        type:a.type,
-        worker:a.worker,
-        user:a.user
-      });
-    }
+    result.push({
+      id: doc.id,
+      date: a.date,
+      time: a.time,
+      duration: dur,
+      type: a.type,
+      worker: a.worker,
+      user: a.user
+    });
   });
 
   res.json(result);
