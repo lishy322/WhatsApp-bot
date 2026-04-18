@@ -4,6 +4,7 @@ const bodyParser = require("body-parser");
 const session = require("express-session");
 const admin = require("firebase-admin");
 const twilio = require("twilio");
+const OpenAI = require("openai");
 const path = require("path");
 
 const app = express();
@@ -19,36 +20,58 @@ app.use(session({
 
 app.use(express.static("public"));
 
-// ===== Firebase =====
+/* ================= FIREBASE ================= */
 admin.initializeApp({
   credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_KEY))
 });
 const db = admin.firestore();
 
-// ===== Twilio =====
+/* ================= TWILIO ================= */
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
 
-// ===== נתונים =====
-const services = { "גבר":15, "ילד":20, "אישה":40 };
+/* ================= OPENAI ================= */
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
+
+/* ================= DATA ================= */
+
+const services = {
+  "גבר": 15,
+  "ילד": 20,
+  "אישה": 40
+};
+
 const workers = ["דוד","משה"];
+
+const workerConfig = {
+  "דוד": { start:"08:00", end:"18:00", breaks:["13:00"], daysOff:["שישי"] },
+  "משה": { start:"09:00", end:"17:00", breaks:["12:00"], daysOff:["שישי"] }
+};
+
 const sessions = {};
 
-// ===== LOGIN =====
+/* ================= AUTH ================= */
+
+function requireAuth(req,res,next){
+  if(!req.session.loggedIn) return res.redirect("/login");
+  next();
+}
+
+app.get("/", (req,res)=>res.redirect("/login"));
+
 app.get("/login",(req,res)=>{
   res.sendFile(path.join(__dirname,"public","login.html"));
 });
 
 app.post("/login",(req,res)=>{
-  const {password} = req.body;
-
-  if(password === process.env.ADMIN_PASSWORD){
+  if(req.body.password === process.env.ADMIN_PASSWORD){
     req.session.loggedIn = true;
     return res.redirect("/admin");
   }
-
   res.send("סיסמה שגויה");
 });
 
@@ -57,34 +80,22 @@ app.get("/logout",(req,res)=>{
   res.redirect("/login");
 });
 
-function requireAuth(req,res,next){
-  if(!req.session.loggedIn){
-    return res.redirect("/login");
-  }
-  next();
-}
-
-// ===== ROOT =====
-app.get("/",(req,res)=>{
-  res.redirect("/login");
-});
-
-// ===== ADMIN =====
 app.get("/admin", requireAuth, (req,res)=>{
   res.sendFile(path.join(__dirname,"public","index.html"));
 });
 
-// ===== HELPERS =====
+/* ================= HELPERS ================= */
+
 async function send(to,msg){
   return client.messages.create({
     from: process.env.TWILIO_WHATSAPP_NUMBER,
-    to: to,
+    to: to.startsWith("whatsapp:") ? to : "whatsapp:"+to,
     body: msg
   });
 }
 
 function getNextDay(day){
-  const map={"ראשון":0,"שני":1,"שלישי":2,"רביעי":3,"חמישי":4};
+  const map={"ראשון":0,"שני":1,"שלישי":2,"רביעי":3,"חמישי":4,"שישי":5,"שבת":6};
   const now=new Date();
   let diff=map[day]-now.getDay();
   if(diff<=0) diff+=7;
@@ -93,90 +104,194 @@ function getNextDay(day){
   return d.toISOString().split("T")[0];
 }
 
-// ===== BOT =====
+/* ================= CRM ================= */
+
+async function getOrCreateCustomer(phone){
+  const ref = db.collection("customers").doc(phone);
+  const doc = await ref.get();
+
+  if(!doc.exists){
+    await ref.set({
+      phone,
+      visits:0,
+      createdAt:new Date()
+    });
+    return { phone, visits:0 };
+  }
+
+  return doc.data();
+}
+
+/* ================= AI ================= */
+
+async function parseWithAI(text){
+
+  const prompt = `
+  תנתח הודעה של לקוח לקביעת תור.
+  תחזיר JSON בלבד:
+
+  {
+    "type": "גבר/אישה/ילד",
+    "day": "ראשון/שני/שלישי/רביעי/חמישי",
+    "time": "HH:MM"
+  }
+
+  הודעה:
+  ${text}
+  `;
+
+  const completion = await openai.chat.completions.create({
+    model:"gpt-4o-mini",
+    messages:[{role:"user",content:prompt}]
+  });
+
+  try{
+    return JSON.parse(completion.choices[0].message.content);
+  }catch{
+    return {};
+  }
+}
+
+/* ================= BUSINESS LOGIC ================= */
+
+async function isClosed(date){
+  const doc = await db.collection("closedDays").doc(date).get();
+  return doc.exists;
+}
+
+async function isAvailable(date,time,duration,worker){
+
+  const config = workerConfig[worker];
+
+  const dayName = new Date(date).toLocaleDateString("he-IL",{weekday:"long"});
+  if(config.daysOff.includes(dayName)) return false;
+
+  if(time < config.start || time >= config.end) return false;
+  if(config.breaks.includes(time)) return false;
+
+  const snap = await db.collection("appointments")
+    .where("date","==",date)
+    .where("worker","==",worker)
+    .get();
+
+  const [h,m] = time.split(":").map(Number);
+  const start = h*60+m;
+  const end = start + duration;
+
+  for(const doc of snap.docs){
+    const a = doc.data();
+    const dur = services[a.type] || 15;
+
+    const [hh,mm] = a.time.split(":").map(Number);
+    const s = hh*60+mm;
+    const e = s+dur;
+
+    if(start < e && end > s) return false;
+  }
+
+  return true;
+}
+
+/* ================= WHATSAPP BOT ================= */
+
 app.post("/whatsapp", async (req,res)=>{
 
-  const msg=req.body.Body.trim();
-  const from=req.body.From;
+  const msg = req.body.Body.trim();
+  const from = req.body.From;
 
   if(!sessions[from]) sessions[from]={};
-  const s=sessions[from];
+  const s = sessions[from];
 
-  if(!s.step){
-    s.step="worker";
-    await send(from,"לאיזה ספר?\n👉 דוד / משה");
-    return res.send("ok");
-  }
+  try{
 
-  if(s.step==="worker"){
-    s.worker=msg;
-    s.step="type";
-    await send(from,"למי התור?\n👉 גבר / אישה / ילד");
-    return res.send("ok");
-  }
+    const customer = await getOrCreateCustomer(from);
 
-  if(s.step==="type"){
-    s.type=msg;
-    s.step="date";
-    await send(from,"לאיזה יום?\n👉 מחר / יום שלישי");
-    return res.send("ok");
-  }
+    if(!s.step){
+      s.step="start";
 
-  if(s.step==="date"){
+      if(customer.visits>0){
+        await send(from,`ברוך שובך 👋 (${customer.visits} ביקורים)`);
+      } else {
+        await send(from,"היי 👋 רוצה לקבוע תור?");
+      }
 
-    let date=null;
-
-    if(msg.includes("מחר")){
-      const d=new Date();
-      d.setDate(d.getDate()+1);
-      date=d.toISOString().split("T")[0];
-    } else {
-      const match=msg.match(/יום\s(ראשון|שני|שלישי|רביעי|חמישי)/);
-      if(match) date=getNextDay(match[1]);
-    }
-
-    if(!date){
-      await send(from,"לא הבנתי תאריך 😅");
       return res.send("ok");
     }
 
-    s.date=date;
-    s.step="time";
+    const ai = await parseWithAI(msg);
 
-    await send(from,"איזה שעה?");
-    return res.send("ok");
-  }
+    if(ai.type) s.type = ai.type;
+    if(ai.time) s.time = ai.time;
+    if(ai.day) s.date = getNextDay(ai.day);
 
-  if(s.step==="time"){
+    if(!s.worker){
+      await send(from,"לאיזה ספר?\n👉 דוד / משה");
+      return res.send("ok");
+    }
 
-    let time = msg.length<=2 ? msg+":00" : msg;
+    if(!s.type){
+      await send(from,"למי התור?\n👉 גבר / אישה / ילד");
+      return res.send("ok");
+    }
+
+    if(!s.date){
+      await send(from,"לאיזה יום?");
+      return res.send("ok");
+    }
+
+    if(!s.time){
+      await send(from,"איזה שעה נוחה?");
+      return res.send("ok");
+    }
+
+    if(await isClosed(s.date)){
+      await send(from,"❌ העסק סגור ביום הזה");
+      return res.send("ok");
+    }
+
+    const ok = await isAvailable(s.date,s.time,services[s.type],s.worker);
+
+    if(!ok){
+      await send(from,"השעה תפוסה 😅");
+      return res.send("ok");
+    }
 
     await db.collection("appointments").add({
       user:from,
       date:s.date,
-      time,
+      time:s.time,
       type:s.type,
       worker:s.worker
     });
 
-    await send(from,`🎉 נקבע תור ל-${s.date} ${time}`);
+    await db.collection("customers").doc(from).update({
+      visits: admin.firestore.FieldValue.increment(1),
+      lastVisit:new Date()
+    });
+
+    await send(from,`🎉 נקבע תור ל-${s.date} ${s.time}`);
 
     sessions[from]={};
 
     return res.send("ok");
+
+  }catch(e){
+    console.error(e);
   }
 
+  res.send("ok");
 });
 
-// ===== API =====
+/* ================= API ================= */
+
 app.get("/appointments/week", requireAuth, async (req,res)=>{
   const snap = await db.collection("appointments").get();
 
-  const result=[];
+  const result = [];
 
   snap.docs.forEach(doc=>{
-    const a=doc.data();
-    const dur=services[a.type] || 15;
+    const a = doc.data();
+    const dur = services[a.type] || 15;
 
     result.push({
       id: doc.id,
@@ -192,23 +307,24 @@ app.get("/appointments/week", requireAuth, async (req,res)=>{
   res.json(result);
 });
 
-// ביטול
 app.delete("/appointments/:id", requireAuth, async(req,res)=>{
   await db.collection("appointments").doc(req.params.id).delete();
   res.send("ok");
 });
 
-// שינוי
 app.put("/appointments/:id", requireAuth, async(req,res)=>{
   await db.collection("appointments").doc(req.params.id).update(req.body);
   res.send("ok");
 });
 
-// סגירת יום
 app.post("/close-day", requireAuth, async(req,res)=>{
-  const {date}=req.body;
-  await db.collection("closedDays").doc(date).set({closed:true});
+  await db.collection("closedDays").doc(req.body.date).set({closed:true});
   res.send("ok");
 });
 
-app.listen(8080,()=>console.log("🚀 SYSTEM WITH LOGIN READY"));
+app.get("/customers", requireAuth, async(req,res)=>{
+  const snap = await db.collection("customers").get();
+  res.json(snap.docs.map(d=>d.data()));
+});
+
+app.listen(8080,()=>console.log("🚀 FULL BUSINESS SYSTEM READY"));
