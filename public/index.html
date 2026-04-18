@@ -2,41 +2,36 @@
 <html lang="he">
 <head>
 <meta charset="UTF-8">
-<title>ניהול תורים</title>
+<title>מערכת תורים</title>
 
 <style>
-body {font-family:Arial;margin:0;background:#f1f5f9;direction:rtl;}
+body{font-family:Arial;margin:0;background:#f1f5f9;direction:rtl;}
 
 .header{
 background:#0f172a;color:#fff;padding:15px;
-display:flex;justify-content:space-between;align-items:center;
-}
-
-button{
-padding:6px 10px;border:none;border-radius:6px;
-background:#3b82f6;color:#fff;cursor:pointer;
+display:flex;justify-content:space-between;
 }
 
 .calendar{
 display:grid;
 grid-template-columns:repeat(7,1fr);
-gap:8px;
-padding:10px;
+gap:8px;padding:10px;
 }
 
 .day{
 background:#fff;border-radius:10px;padding:6px;
 min-height:110px;cursor:pointer;
-box-shadow:0 2px 4px rgba(0,0,0,0.1);
 }
 
 .event{
-font-size:11px;padding:3px;border-radius:6px;margin-top:3px;color:#fff;
+font-size:11px;padding:4px;border-radius:6px;margin-top:3px;color:#fff;
+cursor:grab;
 }
 
 .man{background:#3b82f6;}
 .woman{background:#ec4899;}
 .kid{background:#10b981;}
+.bot{border:2px dashed yellow;}
 .manual{border:2px solid black;}
 
 .modal{
@@ -45,18 +40,17 @@ background:rgba(0,0,0,0.6);
 display:none;justify-content:center;align-items:center;
 }
 
-.modal-content{
-background:#fff;padding:20px;border-radius:10px;width:350px;
+.modal-box{
+background:#fff;padding:20px;border-radius:10px;width:320px;
 }
 
-.slot{padding:6px;border-bottom:1px solid #ddd;cursor:pointer;}
-
-.stats{
-padding:10px;display:flex;gap:20px;
+input,select{
+width:100%;margin-bottom:8px;padding:6px;
 }
 
-.card{
-background:#fff;padding:10px;border-radius:8px;
+button{
+padding:6px;border:none;border-radius:6px;background:#3b82f6;color:#fff;
+cursor:pointer;
 }
 </style>
 </head>
@@ -64,68 +58,72 @@ background:#fff;padding:10px;border-radius:8px;
 <body>
 
 <div class="header">
+  <div>✂️ העסק שלי - ליבי 🤖</div>
   <div id="monthTitle"></div>
-
-  <div>
-    <button onclick="prevMonth()">⬅️</button>
-    <button onclick="nextMonth()">➡️</button>
-    <button onclick="closeDay()">חסום יום</button>
-  </div>
-</div>
-
-<div class="stats">
-  <div class="card">וואטסאפ: <span id="wa">0</span></div>
-  <div class="card">ידני: <span id="manual">0</span></div>
 </div>
 
 <div id="calendar" class="calendar"></div>
 
-<!-- MODAL -->
-<div id="modal" class="modal" onclick="closeModal()">
-  <div class="modal-content" onclick="event.stopPropagation()">
+<!-- DAY VIEW -->
+<div id="modal" class="modal">
+  <div class="modal-box">
     <h3 id="dayTitle"></h3>
     <div id="slots"></div>
-    <button onclick="createManual()">➕ תור ידני</button>
+    <button onclick="openForm()">➕ תור</button>
+  </div>
+</div>
+
+<!-- FORM -->
+<div id="formModal" class="modal">
+  <div class="modal-box">
+    <h3>תור חדש</h3>
+
+    <input id="name" placeholder="שם לקוח">
+    
+    <select id="worker">
+      <option>דוד</option>
+      <option>משה</option>
+    </select>
+
+    <select id="type">
+      <option>גבר</option>
+      <option>אישה</option>
+      <option>ילד</option>
+    </select>
+
+    <input id="date">
+    <input id="time">
+
+    <button onclick="save()">שמור</button>
   </div>
 </div>
 
 <script>
 
-let current=new Date();
 let data=[];
+let selectedDate="";
+let dragId=null;
 
-/* ===== LOAD ===== */
 async function load(){
   const res=await fetch("/appointments/week");
   data=await res.json();
   render();
 }
 
-/* ===== MONTH ===== */
-function prevMonth(){current.setMonth(current.getMonth()-1);render();}
-function nextMonth(){current.setMonth(current.getMonth()+1);render();}
-
 function getDays(){
-  const year=current.getFullYear();
-  const month=current.getMonth();
-  const last=new Date(year,month+1,0);
+  let now=new Date();
   let arr=[];
-  for(let i=1;i<=last.getDate();i++){
-    arr.push(new Date(year,month,i));
+  for(let i=0;i<30;i++){
+    let d=new Date();
+    d.setDate(now.getDate()+i);
+    arr.push(d);
   }
   return arr;
 }
 
-/* ===== RENDER ===== */
 function render(){
-
   const cal=document.getElementById("calendar");
   cal.innerHTML="";
-
-  document.getElementById("monthTitle").innerText =
-    current.toLocaleDateString("he-IL",{month:"long",year:"numeric"});
-
-  let wa=0,manual=0;
 
   getDays().forEach(d=>{
     const date=d.toISOString().split("T")[0];
@@ -137,9 +135,6 @@ function render(){
     const daily=data.filter(a=>a.date===date);
 
     daily.forEach(a=>{
-      if(a.source==="whatsapp") wa++;
-      else manual++;
-
       const el=document.createElement("div");
       el.className="event";
 
@@ -148,101 +143,94 @@ function render(){
       if(a.type==="ילד") el.classList.add("kid");
 
       if(a.source==="manual") el.classList.add("manual");
+      else el.classList.add("bot");
 
-      el.innerText=`${a.time} ${a.name || a.type}`;
+      el.innerText=`${a.time} ${a.name}`;
+
+      el.draggable=true;
+      el.dataset.id=a.id;
+
+      el.ondragstart=()=>dragId=a.id;
 
       el.onclick=(e)=>{
         e.stopPropagation();
-        cancel(a.id);
+        if(confirm("לבטל תור?")){
+          fetch("/appointments/"+a.id,{method:"DELETE"}).then(load);
+        }
       };
 
       div.appendChild(el);
     });
 
+    div.ondragover=e=>e.preventDefault();
+
+    div.ondrop=()=>{
+      if(!dragId) return;
+      fetch("/appointments/move",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({id:dragId,newDate:date,newTime:"10:00"})
+      }).then(load);
+    };
+
     div.onclick=()=>openDay(date);
 
     cal.appendChild(div);
   });
-
-  document.getElementById("wa").innerText=wa;
-  document.getElementById("manual").innerText=manual;
 }
 
-/* ===== DAY VIEW ===== */
 function openDay(date){
-
+  selectedDate=date;
   document.getElementById("modal").style.display="flex";
   document.getElementById("dayTitle").innerText=date;
 
-  const container=document.getElementById("slots");
-  container.innerHTML="";
+  const slots=document.getElementById("slots");
+  slots.innerHTML="";
 
   for(let h=8;h<=18;h++){
+    let time=(h<10?"0":"")+h+":00";
 
-    const time=(h<10?"0":"")+h+":00";
+    let found=data.find(a=>a.date===date && a.time===time);
 
-    const found=data.find(a=>a.date===date && a.time===time);
-
-    const div=document.createElement("div");
-    div.className="slot";
+    let div=document.createElement("div");
 
     if(found){
-      div.innerText=`${time} - ${found.name || found.type} (${found.worker})`;
-      div.onclick=()=>cancel(found.id);
+      div.innerText=time+" "+found.name;
     }else{
-      div.innerText=`${time} - פנוי`;
-      div.onclick=()=>createAt(date,time);
+      div.innerText=time+" פנוי";
     }
 
-    container.appendChild(div);
+    slots.appendChild(div);
   }
 }
 
-function closeModal(){
-  document.getElementById("modal").style.display="none";
+function openForm(){
+  document.getElementById("formModal").style.display="flex";
+  document.getElementById("date").value=selectedDate;
 }
 
-/* ===== ACTIONS ===== */
+function save(){
 
-async function cancel(id){
-  if(!confirm("לבטל תור?")) return;
-  await fetch("/appointments/"+id,{method:"DELETE"});
-  load();
-}
-
-async function createAt(date,time){
-  const name=prompt("שם לקוח:");
-  const worker=prompt("ספר (דוד/משה):");
-
-  await fetch("/appointments/manual",{
+  fetch("/appointments/manual",{
     method:"POST",
     headers:{"Content-Type":"application/json"},
     body:JSON.stringify({
-      date,time,name,worker,type:"גבר",source:"manual"
+      name:document.getElementById("name").value,
+      worker:document.getElementById("worker").value,
+      type:document.getElementById("type").value,
+      date:document.getElementById("date").value,
+      time:document.getElementById("time").value,
+      source:"manual"
     })
+  }).then(()=>{
+    document.getElementById("formModal").style.display="none";
+    load();
   });
-
-  load();
-}
-
-function createManual(){
-  const date=prompt("תאריך:");
-  const time=prompt("שעה:");
-  createAt(date,time);
-}
-
-async function closeDay(){
-  const date=prompt("תאריך לחסימה:");
-  await fetch("/close-day",{
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({date})
-  });
-  alert("יום נחסם");
 }
 
 load();
 
 </script>
+
 </body>
 </html>
