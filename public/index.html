@@ -8,59 +8,79 @@
 body {
   font-family: Arial;
   margin: 0;
-  background: #f5f7fb;
+  background: #f1f5f9;
   direction: rtl;
 }
 
+/* HEADER */
 .header {
   background: #0f172a;
   color: white;
   padding: 15px;
-  font-size: 20px;
   display: flex;
   justify-content: space-between;
+  align-items: center;
 }
 
-.container {
-  padding: 20px;
-}
-
-.week {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
+.controls {
+  display: flex;
   gap: 10px;
+}
+
+select {
+  padding: 6px;
+  border-radius: 6px;
+  border: none;
+}
+
+/* SUMMARY */
+.summary {
+  padding: 15px;
+  display: flex;
+  gap: 20px;
+}
+
+.card {
+  background: white;
+  padding: 15px;
+  border-radius: 10px;
+  min-width: 120px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+}
+
+/* CALENDAR */
+.calendar {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 8px;
+  padding: 10px;
 }
 
 .day {
   background: white;
   border-radius: 10px;
-  padding: 10px;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+  padding: 8px;
+  min-height: 100px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
 
-.day h3 {
-  margin: 0;
-  font-size: 16px;
-  border-bottom: 1px solid #eee;
-  padding-bottom: 5px;
-}
-
-.slot {
-  margin-top: 5px;
-  padding: 6px;
-  border-radius: 6px;
-  background: #e5e7eb;
+.day-header {
   font-size: 12px;
+  font-weight: bold;
+  margin-bottom: 5px;
 }
 
-.busy {
-  background: #ec4899;
+.event {
+  font-size: 11px;
+  padding: 4px;
+  border-radius: 6px;
+  margin-top: 3px;
   color: white;
 }
 
-.gavar { background:#3b82f6; color:white; }
-.isha { background:#ec4899; color:white; }
-.yeled { background:#10b981; color:white; }
+.gavar { background:#3b82f6; }
+.isha { background:#ec4899; }
+.yeled { background:#10b981; }
 
 </style>
 </head>
@@ -69,88 +89,101 @@ body {
 
 <div class="header">
   <div>📅 מערכת ניהול תורים</div>
-  <div>דוד / משה</div>
+
+  <div class="controls">
+    <select id="workerFilter">
+      <option value="all">כל הספרים</option>
+      <option value="דוד">דוד</option>
+      <option value="משה">משה</option>
+    </select>
+  </div>
 </div>
 
-<div class="container">
-  <div id="calendar" class="week"></div>
+<div class="summary">
+  <div class="card">דוד: <span id="countDavid">0</span></div>
+  <div class="card">משה: <span id="countMoshe">0</span></div>
 </div>
+
+<div id="calendar" class="calendar"></div>
 
 <script>
 
 const calendar = document.getElementById("calendar");
+const filter = document.getElementById("workerFilter");
 
-function getWeekDates(){
-  const dates = [];
-  const today = new Date();
+let allAppointments = [];
 
-  for(let i=0;i<5;i++){
-    const d = new Date();
-    d.setDate(today.getDate() + i);
-    dates.push(d);
+function getMonthDays(){
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+
+  const first = new Date(year, month, 1);
+  const last = new Date(year, month+1, 0);
+
+  const days = [];
+
+  for(let d=1; d<=last.getDate(); d++){
+    days.push(new Date(year, month, d));
   }
 
-  return dates;
+  return days;
 }
 
-function formatDate(d){
-  return d.toISOString().split("T")[0];
-}
-
-function render(appointments){
+function render(){
 
   calendar.innerHTML = "";
 
-  const days = getWeekDates();
+  const worker = filter.value;
+
+  let david = 0;
+  let moshe = 0;
+
+  const days = getMonthDays();
 
   days.forEach(day => {
 
-    const dateStr = formatDate(day);
+    const dateStr = day.toISOString().split("T")[0];
 
     const div = document.createElement("div");
     div.className = "day";
 
-    div.innerHTML = `
-      <h3>${day.toLocaleDateString("he-IL",{weekday:"long"})}<br>${dateStr}</h3>
-    `;
+    div.innerHTML = `<div class="day-header">${day.getDate()}</div>`;
 
-    for(let h=8; h<=18; h++){
-      let time = (h<10?"0":"")+h+":00";
+    const daily = allAppointments.filter(a => a.date === dateStr);
 
-      const appt = appointments.find(a =>
-        a.date === dateStr && a.time === time
-      );
+    daily.forEach(a => {
 
-      const slot = document.createElement("div");
-      slot.className = "slot";
+      if(worker !== "all" && a.worker !== worker) return;
 
-      if(appt){
-        slot.classList.add("busy");
+      if(a.worker === "דוד") david++;
+      if(a.worker === "משה") moshe++;
 
-        if(appt.type==="גבר") slot.classList.add("gavar");
-        if(appt.type==="אישה") slot.classList.add("isha");
-        if(appt.type==="ילד") slot.classList.add("yeled");
+      const el = document.createElement("div");
+      el.className = "event";
 
-        slot.innerText = `${time} - ${appt.type} (${appt.worker})`;
-      } else {
-        slot.innerText = time + " פנוי";
-      }
+      if(a.type==="גבר") el.classList.add("gavar");
+      if(a.type==="אישה") el.classList.add("isha");
+      if(a.type==="ילד") el.classList.add("yeled");
 
-      div.appendChild(slot);
-    }
+      el.innerText = `${a.time} ${a.type}`;
+
+      div.appendChild(el);
+    });
 
     calendar.appendChild(div);
   });
+
+  document.getElementById("countDavid").innerText = david;
+  document.getElementById("countMoshe").innerText = moshe;
 }
 
+filter.addEventListener("change", render);
+
 async function load(){
-  try{
-    const res = await fetch("/appointments/week");
-    const data = await res.json();
-    render(data);
-  }catch(e){
-    console.error("ERROR:", e);
-  }
+  const res = await fetch("/appointments/week");
+  allAppointments = await res.json();
+  render();
 }
 
 load();
