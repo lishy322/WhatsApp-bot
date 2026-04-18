@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>כניסה</title>
+
+<style>
+body{
+display:flex;
+justify-content:center;
+align-items:center;
+height:100vh;
+background:#111827;
+color:white;
+font-family:Arial;
+}
+
+.box{
+background:#1f2937;
+padding:30px;
+border-radius:10px;
+text-align:center;
+}
+
+input{
+padding:10px;
+margin:10px;
+width:200px;
+}
+
+button{
+padding:10px;
+background:#3b82f6;
+color:white;
+border:none;
+cursor:pointer;
+}
+</style>
+</head>
+
+<body>
+
+<div class="box">
+<h2>כניסת מנהל</h2>
+
+<form method="POST" action="/login">
+<input type="password" name="password" placeholder="סיסמה" required>
+<br>
+<button type="submit">כניסה</button>
+</form>
+
+</div>
+
+</body>
+</html>
