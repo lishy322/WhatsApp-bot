@@ -2,121 +2,75 @@
 <html lang="he">
 <head>
 <meta charset="UTF-8">
-<title>ניהול תורים</title>
+<title>יומן תורים</title>
 
 <style>
 body {
-  font-family: Arial;
-  margin: 0;
-  background: #f1f5f9;
-  direction: rtl;
+  margin:0;
+  font-family:Arial;
+  direction:rtl;
+  background:#f1f5f9;
 }
 
-/* HEADER */
 .header {
-  background: #0f172a;
-  color: white;
-  padding: 15px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+  background:#0f172a;
+  color:white;
+  padding:15px;
+  display:flex;
+  justify-content:space-between;
 }
 
-.controls {
-  display: flex;
-  gap: 10px;
-  align-items: center;
+.controls button {
+  margin-left:5px;
+  padding:6px 10px;
+  border:none;
+  border-radius:6px;
+  background:#3b82f6;
+  color:white;
+  cursor:pointer;
 }
 
-button {
-  padding: 6px 10px;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  background: #3b82f6;
-  color: white;
-}
-
-/* SUMMARY */
-.summary {
-  padding: 15px;
-  display: flex;
-  gap: 20px;
-}
-
-.card {
-  background: white;
-  padding: 15px;
-  border-radius: 10px;
-  min-width: 120px;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
-}
-
-/* CALENDAR */
 .calendar {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 8px;
-  padding: 10px;
+  display:grid;
+  grid-template-columns: 80px repeat(5,1fr);
 }
 
-.day {
-  background: white;
-  border-radius: 10px;
-  padding: 8px;
-  min-height: 110px;
-  cursor: pointer;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}
-
-.day:hover {
-  background: #e2e8f0;
+.time {
+  border-bottom:1px solid #ddd;
+  padding:8px;
+  font-size:12px;
+  background:#f8fafc;
 }
 
 .day-header {
-  font-size: 13px;
-  font-weight: bold;
-  margin-bottom: 5px;
+  text-align:center;
+  padding:10px;
+  font-weight:bold;
+  background:#e2e8f0;
+  border-bottom:1px solid #ccc;
+}
+
+.cell {
+  border:1px solid #eee;
+  height:60px;
+  position:relative;
 }
 
 .event {
-  font-size: 11px;
-  padding: 4px;
-  border-radius: 6px;
-  margin-top: 3px;
-  color: white;
+  position:absolute;
+  top:5px;
+  left:5px;
+  right:5px;
+  padding:5px;
+  border-radius:6px;
+  color:white;
+  font-size:12px;
+  cursor:grab;
 }
 
 .gavar { background:#3b82f6; }
 .isha { background:#ec4899; }
 .yeled { background:#10b981; }
-
-/* MODAL */
-.modal {
-  position: fixed;
-  top:0;
-  left:0;
-  right:0;
-  bottom:0;
-  background: rgba(0,0,0,0.5);
-  display:none;
-  justify-content:center;
-  align-items:center;
-}
-
-.modal-content {
-  background:white;
-  padding:20px;
-  border-radius:10px;
-  width:300px;
-  max-height:80vh;
-  overflow:auto;
-}
-
-.slot {
-  padding:6px;
-  border-bottom:1px solid #ddd;
-}
 
 </style>
 </head>
@@ -124,160 +78,125 @@ button {
 <body>
 
 <div class="header">
-  <div id="monthTitle">📅</div>
-
+  <div>📅 יומן שבועי</div>
   <div class="controls">
-    <button onclick="prevMonth()">⬅️</button>
-    <button onclick="nextMonth()">➡️</button>
-
-    <select id="workerFilter">
-      <option value="all">כל הספרים</option>
-      <option value="דוד">דוד</option>
-      <option value="משה">משה</option>
-    </select>
+    <button onclick="prevWeek()">⬅️</button>
+    <button onclick="nextWeek()">➡️</button>
   </div>
-</div>
-
-<div class="summary">
-  <div class="card">דוד: <span id="countDavid">0</span></div>
-  <div class="card">משה: <span id="countMoshe">0</span></div>
 </div>
 
 <div id="calendar" class="calendar"></div>
 
-<!-- MODAL -->
-<div id="modal" class="modal" onclick="closeModal()">
-  <div class="modal-content" onclick="event.stopPropagation()">
-    <h3 id="modalTitle"></h3>
-    <div id="daySlots"></div>
-  </div>
-</div>
-
 <script>
 
 let current = new Date();
-let allAppointments = [];
+let appointments = [];
 
-const calendar = document.getElementById("calendar");
-const filter = document.getElementById("workerFilter");
+function getWeek(){
+  const start = new Date(current);
+  start.setDate(start.getDate() - start.getDay());
 
-/* ===== MONTH NAV ===== */
-function prevMonth(){
-  current.setMonth(current.getMonth()-1);
-  render();
-}
-function nextMonth(){
-  current.setMonth(current.getMonth()+1);
-  render();
-}
-
-/* ===== DAYS ===== */
-function getDays(){
-  const year = current.getFullYear();
-  const month = current.getMonth();
-  const last = new Date(year, month+1, 0);
-
-  let days = [];
-  for(let d=1; d<=last.getDate(); d++){
-    days.push(new Date(year, month, d));
+  let days=[];
+  for(let i=0;i<5;i++){
+    let d=new Date(start);
+    d.setDate(start.getDate()+i);
+    days.push(d);
   }
   return days;
 }
 
-/* ===== RENDER ===== */
 function render(){
 
-  calendar.innerHTML = "";
+  const cal=document.getElementById("calendar");
+  cal.innerHTML="";
 
-  const monthName = current.toLocaleDateString("he-IL",{month:"long",year:"numeric"});
-  document.getElementById("monthTitle").innerText = monthName;
+  const week=getWeek();
 
-  let david=0, moshe=0;
+  cal.innerHTML += "<div></div>";
+  week.forEach(d=>{
+    cal.innerHTML += `<div class="day-header">${d.toLocaleDateString("he-IL")}</div>`;
+  });
 
-  const worker = filter.value;
+  for(let h=8;h<=18;h++){
 
-  getDays().forEach(day => {
+    cal.innerHTML += `<div class="time">${h}:00</div>`;
 
-    const dateStr = day.toISOString().split("T")[0];
+    week.forEach(day=>{
 
-    const div = document.createElement("div");
-    div.className = "day";
+      const dateStr=day.toISOString().split("T")[0];
+      const time=`${h}:00`;
 
-    div.innerHTML = `<div class="day-header">${day.getDate()}</div>`;
+      const cell=document.createElement("div");
+      cell.className="cell";
+      cell.dataset.date=dateStr;
+      cell.dataset.time=time;
 
-    const daily = allAppointments.filter(a => a.date === dateStr);
+      const found=appointments.find(a=>a.date===dateStr && a.time===time);
 
-    daily.forEach(a => {
+      if(found){
+        const ev=document.createElement("div");
+        ev.className="event";
+        ev.draggable=true;
 
-      if(worker !== "all" && a.worker !== worker) return;
+        if(found.type==="גבר") ev.classList.add("gavar");
+        if(found.type==="אישה") ev.classList.add("isha");
+        if(found.type==="ילד") ev.classList.add("yeled");
 
-      if(a.worker==="דוד") david++;
-      if(a.worker==="משה") moshe++;
+        ev.innerText = `${found.time}\n${found.name || found.type}\n(${found.worker})`;
 
-      const el = document.createElement("div");
-      el.className = "event";
+        ev.dataset.id=found.id;
 
-      if(a.type==="גבר") el.classList.add("gavar");
-      if(a.type==="אישה") el.classList.add("isha");
-      if(a.type==="ילד") el.classList.add("yeled");
+        ev.addEventListener("dragstart",dragStart);
 
-      el.innerText = `${a.time} ${a.name || a.type}`;
+        cell.appendChild(ev);
+      }
 
-      div.appendChild(el);
+      cell.addEventListener("dragover",e=>e.preventDefault());
+      cell.addEventListener("drop",drop);
+
+      cal.appendChild(cell);
     });
-
-    div.onclick = () => openDay(dateStr);
-
-    calendar.appendChild(div);
-  });
-
-  document.getElementById("countDavid").innerText = david;
-  document.getElementById("countMoshe").innerText = moshe;
-}
-
-/* ===== DAY VIEW ===== */
-function openDay(date){
-
-  document.getElementById("modal").style.display="flex";
-  document.getElementById("modalTitle").innerText = date;
-
-  const container = document.getElementById("daySlots");
-  container.innerHTML = "";
-
-  const hours = [];
-  for(let h=8; h<=18; h++){
-    hours.push(`${h}:00`);
   }
+}
 
-  hours.forEach(time => {
+let dragged=null;
 
-    const found = allAppointments.find(a => a.date===date && a.time===time);
+function dragStart(e){
+  dragged=e.target;
+}
 
-    const div = document.createElement("div");
-    div.className = "slot";
+async function drop(e){
 
-    if(found){
-      div.innerText = `${time} - ${found.name || found.type} (${found.worker})`;
-    } else {
-      div.innerText = `${time} - פנוי`;
-    }
+  if(!dragged) return;
 
-    container.appendChild(div);
+  const newDate = e.currentTarget.dataset.date;
+  const newTime = e.currentTarget.dataset.time;
+  const id = dragged.dataset.id;
+
+  await fetch("/appointments/move",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({id,newDate,newTime})
   });
+
+  load();
 }
 
-function closeModal(){
-  document.getElementById("modal").style.display="none";
-}
-
-/* ===== LOAD ===== */
-async function load(){
-  const res = await fetch("/appointments/week");
-  allAppointments = await res.json();
+function prevWeek(){
+  current.setDate(current.getDate()-7);
   render();
 }
 
-filter.addEventListener("change", render);
+function nextWeek(){
+  current.setDate(current.getDate()+7);
+  render();
+}
+
+async function load(){
+  const res = await fetch("/appointments/week");
+  appointments = await res.json();
+  render();
+}
 
 load();
 
