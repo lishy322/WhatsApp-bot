@@ -37,7 +37,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-/* ================= DATA ================= */
+/* ================= CONFIG ================= */
 
 const services = {
   "גבר": 15,
@@ -75,11 +75,6 @@ app.post("/login",(req,res)=>{
   res.send("סיסמה שגויה");
 });
 
-app.get("/logout",(req,res)=>{
-  req.session.destroy();
-  res.redirect("/login");
-});
-
 app.get("/admin", requireAuth, (req,res)=>{
   res.sendFile(path.join(__dirname,"public","index.html"));
 });
@@ -89,7 +84,7 @@ app.get("/admin", requireAuth, (req,res)=>{
 async function send(to,msg){
   return client.messages.create({
     from: process.env.TWILIO_WHATSAPP_NUMBER,
-    to: to.startsWith("whatsapp:") ? to : "whatsapp:"+to,
+    to: to,
     body: msg
   });
 }
@@ -125,27 +120,17 @@ async function getOrCreateCustomer(phone){
 /* ================= AI ================= */
 
 async function parseWithAI(text){
-
-  const prompt = `
-  תנתח הודעה של לקוח לקביעת תור.
-  תחזיר JSON בלבד:
-
-  {
-    "type": "גבר/אישה/ילד",
-    "day": "ראשון/שני/שלישי/רביעי/חמישי",
-    "time": "HH:MM"
-  }
-
-  הודעה:
-  ${text}
-  `;
-
-  const completion = await openai.chat.completions.create({
-    model:"gpt-4o-mini",
-    messages:[{role:"user",content:prompt}]
-  });
-
   try{
+    const completion = await openai.chat.completions.create({
+      model:"gpt-4o-mini",
+      messages:[{
+        role:"user",
+        content:`הוצא יום, שעה וסוג תור מהמשפט:
+        ${text}
+        תחזיר JSON בלבד`
+      }]
+    });
+
     return JSON.parse(completion.choices[0].message.content);
   }catch{
     return {};
@@ -192,7 +177,7 @@ async function isAvailable(date,time,duration,worker){
   return true;
 }
 
-/* ================= WHATSAPP BOT ================= */
+/* ================= WHATSAPP ================= */
 
 app.post("/whatsapp", async (req,res)=>{
 
@@ -206,8 +191,8 @@ app.post("/whatsapp", async (req,res)=>{
 
     const customer = await getOrCreateCustomer(from);
 
-    if(!s.step){
-      s.step="start";
+    if(!s.started){
+      s.started = true;
 
       if(customer.visits>0){
         await send(from,`ברוך שובך 👋 (${customer.visits} ביקורים)`);
@@ -218,8 +203,18 @@ app.post("/whatsapp", async (req,res)=>{
       return res.send("ok");
     }
 
-    const ai = await parseWithAI(msg);
+    // ===== FIX LOOP =====
+    if(["דוד","משה"].includes(msg)) s.worker = msg;
+    if(["גבר","אישה","ילד"].includes(msg)) s.type = msg;
 
+    if(/^\d{1,2}$/.test(msg)) s.time = msg.padStart(2,"0")+":00";
+    if(/^\d{1,2}:\d{2}$/.test(msg)) s.time = msg;
+
+    const days = ["ראשון","שני","שלישי","רביעי","חמישי","שישי","שבת"];
+    if(days.includes(msg)) s.date = getNextDay(msg);
+
+    // AI
+    const ai = await parseWithAI(msg);
     if(ai.type) s.type = ai.type;
     if(ai.time) s.time = ai.time;
     if(ai.day) s.date = getNextDay(ai.day);
@@ -240,7 +235,7 @@ app.post("/whatsapp", async (req,res)=>{
     }
 
     if(!s.time){
-      await send(from,"איזה שעה נוחה?");
+      await send(from,"איזה שעה?");
       return res.send("ok");
     }
 
@@ -269,11 +264,9 @@ app.post("/whatsapp", async (req,res)=>{
       lastVisit:new Date()
     });
 
-    await send(from,`🎉 נקבע תור ל-${s.date} ${s.time}`);
+    await send(from,`🎉 נקבע תור ל-${s.date} בשעה ${s.time}`);
 
     sessions[from]={};
-
-    return res.send("ok");
 
   }catch(e){
     console.error(e);
@@ -286,45 +279,7 @@ app.post("/whatsapp", async (req,res)=>{
 
 app.get("/appointments/week", requireAuth, async (req,res)=>{
   const snap = await db.collection("appointments").get();
-
-  const result = [];
-
-  snap.docs.forEach(doc=>{
-    const a = doc.data();
-    const dur = services[a.type] || 15;
-
-    result.push({
-      id: doc.id,
-      date: a.date,
-      time: a.time,
-      duration: dur,
-      type: a.type,
-      worker: a.worker,
-      user: a.user
-    });
-  });
-
-  res.json(result);
+  res.json(snap.docs.map(d=>({id:d.id,...d.data()})));
 });
 
-app.delete("/appointments/:id", requireAuth, async(req,res)=>{
-  await db.collection("appointments").doc(req.params.id).delete();
-  res.send("ok");
-});
-
-app.put("/appointments/:id", requireAuth, async(req,res)=>{
-  await db.collection("appointments").doc(req.params.id).update(req.body);
-  res.send("ok");
-});
-
-app.post("/close-day", requireAuth, async(req,res)=>{
-  await db.collection("closedDays").doc(req.body.date).set({closed:true});
-  res.send("ok");
-});
-
-app.get("/customers", requireAuth, async(req,res)=>{
-  const snap = await db.collection("customers").get();
-  res.json(snap.docs.map(d=>d.data()));
-});
-
-app.listen(8080,()=>console.log("🚀 FULL BUSINESS SYSTEM READY"));
+app.listen(8080,()=>console.log("🚀 FULL SYSTEM READY"));
