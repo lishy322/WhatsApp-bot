@@ -281,5 +281,31 @@ app.get("/appointments/week", requireAuth, async (req,res)=>{
   const snap = await db.collection("appointments").get();
   res.json(snap.docs.map(d=>({id:d.id,...d.data()})));
 });
+app.post("/appointments/move", (req, res) => {
+  const { id, newDate, newTime } = req.body;
+
+  const appt = appointments.find(a => a.id == id);
+
+  if (!appt) {
+    return res.status(404).send("לא נמצא תור");
+  }
+
+  // ❗ מניעת חפיפה
+  const exists = appointments.find(a =>
+    a.date === newDate &&
+    a.time === newTime &&
+    a.worker === appt.worker
+  );
+
+  if (exists) {
+    return res.status(400).send("השעה תפוסה");
+  }
+
+  // עדכון
+  appt.date = newDate;
+  appt.time = newTime;
+
+  res.send({ success: true });
+});
 
 app.listen(8080,()=>console.log("🚀 FULL SYSTEM READY"));
