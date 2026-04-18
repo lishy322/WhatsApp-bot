@@ -1,224 +1,156 @@
 <!DOCTYPE html>
-<html lang="he" dir="rtl">
+<html lang="he">
 <head>
 <meta charset="UTF-8">
 <title>ניהול תורים</title>
 
 <style>
-
-body{
-margin:0;
-font-family:Arial;
-background:#f3f4f6;
+body {
+  font-family: Arial;
+  margin: 0;
+  background: #f5f7fb;
+  direction: rtl;
 }
 
-header{
-background:#111827;
-color:white;
-padding:15px;
-display:flex;
-justify-content:space-between;
+.header {
+  background: #0f172a;
+  color: white;
+  padding: 15px;
+  font-size: 20px;
+  display: flex;
+  justify-content: space-between;
 }
 
-.container{
-padding:15px;
+.container {
+  padding: 20px;
 }
 
-.controls{
-margin-bottom:10px;
+.week {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
 }
 
-.calendar{
-display:grid;
-grid-template-columns:60px repeat(5,1fr);
-height:80vh;
-border:1px solid #ddd;
-background:white;
+.day {
+  background: white;
+  border-radius: 10px;
+  padding: 10px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
 }
 
-.hour{
-border-bottom:1px solid #eee;
-font-size:12px;
-padding:2px;
+.day h3 {
+  margin: 0;
+  font-size: 16px;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 5px;
 }
 
-.day{
-border-left:1px solid #eee;
-position:relative;
+.slot {
+  margin-top: 5px;
+  padding: 6px;
+  border-radius: 6px;
+  background: #e5e7eb;
+  font-size: 12px;
 }
 
-.event{
-position:absolute;
-left:5px;
-right:5px;
-border-radius:6px;
-color:white;
-padding:4px;
-font-size:12px;
-cursor:grab;
+.busy {
+  background: #ec4899;
+  color: white;
 }
 
-.man{background:#3b82f6;}
-.woman{background:#ec4899;}
-.kid{background:#10b981;}
-
-.closed{
-background:#eee;
-height:100%;
-position:absolute;
-top:0;
-left:0;
-right:0;
-opacity:0.6;
-display:flex;
-align-items:center;
-justify-content:center;
-font-weight:bold;
-}
+.gavar { background:#3b82f6; color:white; }
+.isha { background:#ec4899; color:white; }
+.yeled { background:#10b981; color:white; }
 
 </style>
 </head>
 
 <body>
 
-<header>
-<div>📅 ניהול תורים</div>
-
-<div>
-<select id="worker" onchange="load()">
-<option value="דוד">דוד</option>
-<option value="משה">משה</option>
-</select>
-
-<button onclick="closeDay()">סגור יום</button>
+<div class="header">
+  <div>📅 מערכת ניהול תורים</div>
+  <div>דוד / משה</div>
 </div>
-</header>
 
 <div class="container">
-
-<div class="calendar" id="calendar"></div>
-
+  <div id="calendar" class="week"></div>
 </div>
 
 <script>
 
-function getWeek(){
-  const today=new Date();
-  const days=[];
+const calendar = document.getElementById("calendar");
+
+function getWeekDates(){
+  const dates = [];
+  const today = new Date();
+
   for(let i=0;i<5;i++){
-    const d=new Date();
-    d.setDate(today.getDate()-today.getDay()+i);
-    days.push(d);
+    const d = new Date();
+    d.setDate(today.getDate() + i);
+    dates.push(d);
   }
-  return days;
+
+  return dates;
 }
 
-function timeToY(time){
-  const [h,m]=time.split(":").map(Number);
-  return ((h-8)*60 + m) * 1.2;
+function formatDate(d){
+  return d.toISOString().split("T")[0];
 }
 
-function durationToHeight(d){
-  return d * 1.2;
+function render(appointments){
+
+  calendar.innerHTML = "";
+
+  const days = getWeekDates();
+
+  days.forEach(day => {
+
+    const dateStr = formatDate(day);
+
+    const div = document.createElement("div");
+    div.className = "day";
+
+    div.innerHTML = `
+      <h3>${day.toLocaleDateString("he-IL",{weekday:"long"})}<br>${dateStr}</h3>
+    `;
+
+    for(let h=8; h<=18; h++){
+      let time = (h<10?"0":"")+h+":00";
+
+      const appt = appointments.find(a =>
+        a.date === dateStr && a.time === time
+      );
+
+      const slot = document.createElement("div");
+      slot.className = "slot";
+
+      if(appt){
+        slot.classList.add("busy");
+
+        if(appt.type==="גבר") slot.classList.add("gavar");
+        if(appt.type==="אישה") slot.classList.add("isha");
+        if(appt.type==="ילד") slot.classList.add("yeled");
+
+        slot.innerText = `${time} - ${appt.type} (${appt.worker})`;
+      } else {
+        slot.innerText = time + " פנוי";
+      }
+
+      div.appendChild(slot);
+    }
+
+    calendar.appendChild(div);
+  });
 }
 
 async function load(){
-
-const worker=document.getElementById("worker").value;
-const res=await fetch("/appointments/week");
-const data=await res.json();
-
-const cal=document.getElementById("calendar");
-cal.innerHTML="";
-
-const days=getWeek();
-
-// שעות צד
-for(let h=8;h<=18;h++){
-  cal.innerHTML+=`<div class="hour">${h}:00</div>`;
-  days.forEach(()=>cal.innerHTML+=`<div class="day"></div>`);
-}
-
-// יצירת בלוקים
-days.forEach((day,dayIndex)=>{
-
-  const dateStr=day.toISOString().split("T")[0];
-
-  const dayEvents=data.filter(a =>
-    a.worker===worker && a.date===dateStr
-  );
-
-  const dayDivs = document.querySelectorAll(".day");
-
-  const col = dayIndex+1;
-
-  dayEvents.forEach(a=>{
-
-    const index = col + (Math.floor((parseInt(a.time.split(":")[0])-8))*6);
-
-    const el = dayDivs[index];
-
-    const div=document.createElement("div");
-
-    const cls =
-      a.type==="גבר"?"man":
-      a.type==="אישה"?"woman":"kid";
-
-    div.className="event "+cls;
-    div.style.top = timeToY(a.time)+"px";
-    div.style.height = durationToHeight(a.duration)+"px";
-
-    div.innerText = a.type;
-
-    div.draggable=true;
-
-    div.ondragstart=()=>window.dragId=a.id;
-
-    div.onclick=async ()=>{
-      if(confirm("לבטל תור?")){
-        await fetch("/appointments/"+a.id,{method:"DELETE"});
-        load();
-      }
-    };
-
-    el.appendChild(div);
-
-  });
-
-});
-
-}
-
-// גרירה
-document.addEventListener("dragover",e=>e.preventDefault());
-
-document.addEventListener("drop",async e=>{
-  if(!window.dragId) return;
-
-  const date=prompt("תאריך חדש YYYY-MM-DD");
-  const time=prompt("שעה חדשה HH:MM");
-
-  await fetch("/appointments/"+window.dragId,{
-    method:"PUT",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({date,time})
-  });
-
-  load();
-});
-
-// סגירת יום
-async function closeDay(){
-  const date=prompt("תאריך YYYY-MM-DD");
-  if(!date) return;
-
-  await fetch("/close-day",{
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({date})
-  });
-
-  alert("יום נסגר");
+  try{
+    const res = await fetch("/appointments/week");
+    const data = await res.json();
+    render(data);
+  }catch(e){
+    console.error("ERROR:", e);
+  }
 }
 
 load();
