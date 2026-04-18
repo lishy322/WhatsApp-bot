@@ -25,12 +25,16 @@ body {
 .controls {
   display: flex;
   gap: 10px;
+  align-items: center;
 }
 
-select {
-  padding: 6px;
-  border-radius: 6px;
+button {
+  padding: 6px 10px;
   border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  background: #3b82f6;
+  color: white;
 }
 
 /* SUMMARY */
@@ -60,12 +64,17 @@ select {
   background: white;
   border-radius: 10px;
   padding: 8px;
-  min-height: 100px;
+  min-height: 110px;
+  cursor: pointer;
   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
 
+.day:hover {
+  background: #e2e8f0;
+}
+
 .day-header {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: bold;
   margin-bottom: 5px;
 }
@@ -82,15 +91,45 @@ select {
 .isha { background:#ec4899; }
 .yeled { background:#10b981; }
 
+/* MODAL */
+.modal {
+  position: fixed;
+  top:0;
+  left:0;
+  right:0;
+  bottom:0;
+  background: rgba(0,0,0,0.5);
+  display:none;
+  justify-content:center;
+  align-items:center;
+}
+
+.modal-content {
+  background:white;
+  padding:20px;
+  border-radius:10px;
+  width:300px;
+  max-height:80vh;
+  overflow:auto;
+}
+
+.slot {
+  padding:6px;
+  border-bottom:1px solid #ddd;
+}
+
 </style>
 </head>
 
 <body>
 
 <div class="header">
-  <div>📅 מערכת ניהול תורים</div>
+  <div id="monthTitle">📅</div>
 
   <div class="controls">
+    <button onclick="prevMonth()">⬅️</button>
+    <button onclick="nextMonth()">➡️</button>
+
     <select id="workerFilter">
       <option value="all">כל הספרים</option>
       <option value="דוד">דוד</option>
@@ -106,42 +145,58 @@ select {
 
 <div id="calendar" class="calendar"></div>
 
+<!-- MODAL -->
+<div id="modal" class="modal" onclick="closeModal()">
+  <div class="modal-content" onclick="event.stopPropagation()">
+    <h3 id="modalTitle"></h3>
+    <div id="daySlots"></div>
+  </div>
+</div>
+
 <script>
+
+let current = new Date();
+let allAppointments = [];
 
 const calendar = document.getElementById("calendar");
 const filter = document.getElementById("workerFilter");
 
-let allAppointments = [];
+/* ===== MONTH NAV ===== */
+function prevMonth(){
+  current.setMonth(current.getMonth()-1);
+  render();
+}
+function nextMonth(){
+  current.setMonth(current.getMonth()+1);
+  render();
+}
 
-function getMonthDays(){
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth();
-
-  const first = new Date(year, month, 1);
+/* ===== DAYS ===== */
+function getDays(){
+  const year = current.getFullYear();
+  const month = current.getMonth();
   const last = new Date(year, month+1, 0);
 
-  const days = [];
-
+  let days = [];
   for(let d=1; d<=last.getDate(); d++){
     days.push(new Date(year, month, d));
   }
-
   return days;
 }
 
+/* ===== RENDER ===== */
 function render(){
 
   calendar.innerHTML = "";
 
+  const monthName = current.toLocaleDateString("he-IL",{month:"long",year:"numeric"});
+  document.getElementById("monthTitle").innerText = monthName;
+
+  let david=0, moshe=0;
+
   const worker = filter.value;
 
-  let david = 0;
-  let moshe = 0;
-
-  const days = getMonthDays();
-
-  days.forEach(day => {
+  getDays().forEach(day => {
 
     const dateStr = day.toISOString().split("T")[0];
 
@@ -156,8 +211,8 @@ function render(){
 
       if(worker !== "all" && a.worker !== worker) return;
 
-      if(a.worker === "דוד") david++;
-      if(a.worker === "משה") moshe++;
+      if(a.worker==="דוד") david++;
+      if(a.worker==="משה") moshe++;
 
       const el = document.createElement("div");
       el.className = "event";
@@ -166,10 +221,12 @@ function render(){
       if(a.type==="אישה") el.classList.add("isha");
       if(a.type==="ילד") el.classList.add("yeled");
 
-      el.innerText = `${a.time} ${a.type}`;
+      el.innerText = `${a.time} ${a.name || a.type}`;
 
       div.appendChild(el);
     });
+
+    div.onclick = () => openDay(dateStr);
 
     calendar.appendChild(div);
   });
@@ -178,13 +235,49 @@ function render(){
   document.getElementById("countMoshe").innerText = moshe;
 }
 
-filter.addEventListener("change", render);
+/* ===== DAY VIEW ===== */
+function openDay(date){
 
+  document.getElementById("modal").style.display="flex";
+  document.getElementById("modalTitle").innerText = date;
+
+  const container = document.getElementById("daySlots");
+  container.innerHTML = "";
+
+  const hours = [];
+  for(let h=8; h<=18; h++){
+    hours.push(`${h}:00`);
+  }
+
+  hours.forEach(time => {
+
+    const found = allAppointments.find(a => a.date===date && a.time===time);
+
+    const div = document.createElement("div");
+    div.className = "slot";
+
+    if(found){
+      div.innerText = `${time} - ${found.name || found.type} (${found.worker})`;
+    } else {
+      div.innerText = `${time} - פנוי`;
+    }
+
+    container.appendChild(div);
+  });
+}
+
+function closeModal(){
+  document.getElementById("modal").style.display="none";
+}
+
+/* ===== LOAD ===== */
 async function load(){
   const res = await fetch("/appointments/week");
   allAppointments = await res.json();
   render();
 }
+
+filter.addEventListener("change", render);
 
 load();
 
